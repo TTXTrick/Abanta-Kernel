@@ -16,7 +16,8 @@ SRC = src
 BUILD = build
 BIN = bin
 
-CFLAGS = -I$(GNU_EFI_DIR)/include -fshort-wchar -mno-red-zone -fno-exceptions -fno-rtti -fvisibility=hidden -Wall -Wextra -O2 -fPIC
+# Add local include directory so src/include/elf.h is found
+CFLAGS = -I$(GNU_EFI_DIR)/include -I$(SRC)/include -fshort-wchar -mno-red-zone -fno-exceptions -fno-rtti -fvisibility=hidden -Wall -Wextra -O2 -fPIC
 LDFLAGS = -nostdlib -znocombreloc -T $(GNU_EFI_DIR)/lib/elf_x86_64_efi.lds -shared -Bsymbolic
 
 SRCS = $(wildcard $(SRC)/*.c)
@@ -42,7 +43,7 @@ $(EFI): $(OBJS) | $(BIN)
 	  -L$(GNU_EFI_DIR)/lib -lefi -lgnuefi
 
 clean:
-	rm -rf $(BUILD) $(BIN)
+	rm -rf $(BUILD) $(BIN) fat.img
 
 # Run in QEMU with OVMF (example - adjust path to OVMF_CODE.fd and OVMF_VARS.fd on your distro)
 # On Debian/Ubuntu these files often live in /usr/share/ovmf/

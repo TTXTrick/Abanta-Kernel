@@ -395,7 +395,7 @@ static EFI_STATUS load_elf_from_buffer(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE 
                 Print(L"AllocatePages at requested address 0x%lx failed: %r\n", segs[s].addr, st);
                 /* rollback already allocated segments */
                 for (int j = 0; j < s; ++j) {
-                    uefi_call_wrapper(ST->BootServices->FreePages, 2, segments_alloc[j].addr, segments_alloc[j].pages);
+                    uefi_call_wrapper(ST->BootServices->FreePages, 2, segs[j].addr, segs[j].pages);
                 }
                 return st;
             } else {
@@ -406,7 +406,7 @@ static EFI_STATUS load_elf_from_buffer(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE 
                     Print(L"AllocatePages failed (AnyPages): %r\n", st);
                     /* rollback previous */
                     for (int j = 0; j < s; ++j) {
-                        uefi_call_wrapper(ST->BootServices->FreePages, 2, segments_alloc[j].addr, segments_alloc[j].pages);
+                        uefi_call_wrapper(ST->BootServices->FreePages, 2, segs[j].addr, segs[j].pages);
                     }
                     return st;
                 }

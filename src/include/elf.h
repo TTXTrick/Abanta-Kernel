@@ -175,4 +175,12 @@ typedef struct {
     size_t shstrndx;
 } elf_sections_t;
 
+/* --- Functions in elf.c --- */
+
+elf_sections_t elf_parse_sections(void *file);
+Elf64_Shdr* elf_find_section(elf_sections_t *sec, const char *name);
+Elf64_Shdr* elf_find_symtab(elf_sections_t *sec);
+Elf64_Shdr* elf_find_strtab(elf_sections_t *sec);
+Elf64_Shdr* elf_find_rela(elf_sections_t *sec, const char *for_section);
+
 #endif

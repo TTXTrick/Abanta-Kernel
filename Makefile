@@ -1,8 +1,5 @@
-# Makefile for Abanta UEFI kernel (gnu-efi)
-# Adjust GNU_EFI and TOOLCHAIN paths if needed.
-
-# Example (Debian/Ubuntu): install packages `gnu-efi` and `efibootmgr`/`ovmf`
-# and then run `make`
+# Makefile for Abanta UEFI kernel (GNU-EFI)
+# Uses system GNU-EFI headers in /usr/include/efi and /usr/include/efi/protocol
 
 GNU_EFI_DIR ?= /usr
 BINUTILS_PREFIX ?=
@@ -16,8 +13,9 @@ SRC = src
 BUILD = build
 BIN = bin
 
-# Add local include directory so src/include/elf.h is found
-CFLAGS = -I$(GNU_EFI_DIR)/include -I$(SRC)/include -fshort-wchar -mno-red-zone -fno-exceptions -fno-rtti -fvisibility=hidden -Wall -Wextra -O2 -fPIC
+# Use system gnu-efi headers
+CFLAGS = -I$(GNU_EFI_DIR)/include -I$(GNU_EFI_DIR)/include/efi -I$(GNU_EFI_DIR)/include/efi/protocol -fshort-wchar -mno-red-zone -fvisibility=hidden -Wall -Wextra -O2 -fPIC
+# linker flags for gnu-efi
 LDFLAGS = -nostdlib -znocombreloc -T $(GNU_EFI_DIR)/lib/elf_x86_64_efi.lds -shared -Bsymbolic
 
 SRCS = $(wildcard $(SRC)/*.c)
@@ -45,25 +43,20 @@ $(EFI): $(OBJS) | $(BIN)
 clean:
 	rm -rf $(BUILD) $(BIN) fat.img
 
-# Run in QEMU with OVMF (example - adjust path to OVMF_CODE.fd and OVMF_VARS.fd on your distro)
-# On Debian/Ubuntu these files often live in /usr/share/ovmf/
+# QEMU/OVMF run (adjust OVMF paths on your distro)
 OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
 OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS.fd
 
 run: all
-	# create a small FAT image with the EFI binary in /EFI/BOOT/BOOTX64.EFI
+	# create a small FAT image and put EFI binary at /EFI/BOOT/BOOTX64.EFI
 	rm -f fat.img
-	fallocate -l 64M fat.img
-	# format as FAT (need dosfstools)
-	sudo losetup -f --show fat.img >/tmp/loopdevice
-	LOOP=$(cat /tmp/loopdevice); sudo mkfs.vfat -n ABANTA $$LOOP
-	mkdir -p mnt
-	sudo mount $$LOOP mnt
-	sudo mkdir -p mnt/EFI/BOOT
-	sudo cp $(EFI) mnt/EFI/BOOT/BOOTX64.EFI
-	sudo umount $$LOOP
-	sudo losetup -d $$LOOP
-	qemu-system-x86_64 -enable-kvm -m 1024 \
+	dd if=/dev/zero of=fat.img bs=1M count=64
+	mkfs.vfat fat.img
+	# use mtools to avoid sudo/mount
+	mmd -i fat.img ::/EFI
+	mmd -i fat.img ::/EFI/BOOT
+	mcopy -i fat.img bin/abanta.efi ::/EFI/BOOT/BOOTX64.EFI
+	qemu-system-x86_64 -m 1024 \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	  -drive if=pflash,format=raw,file=$(OVMF_VARS) \
 	  -hda fat.img

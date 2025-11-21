@@ -14,6 +14,15 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Add protocol and guid headers so filesystem/loaded-image/file-info types and GUIDs
+   are declared (GNU-EFI/EDK2 installed headers). Depending on distro these may
+   live under /usr/include/efi/Protocol or /usr/include/efi/protocol; our Makefile
+   already adds -I/usr/include/efi and -I/usr/include/efi/protocol.
+*/
+#include <protocol/loaded_image.h>
+#include <protocol/simple_file_system.h>
+#include <guid/file_info.h>
+
 /* ----- Minimal ELF64 types ----- */
 typedef uint16_t Elf64_Half;
 typedef uint32_t Elf64_Word;
@@ -129,7 +138,12 @@ struct abanta_host_api *abanta_host_api = NULL;
 
 /* helper wrappers that will be set in host_api implementation */
 static void api_print_utf16(const CHAR16 *s) {
-    Print(L"%s", s);
+    /* efilib.h provides Print() which supports printf-like formatting.
+       Here we forward a simple string by using Print with the string itself.
+       Print expects CHAR16* and works like OutputString(); don't use format
+       tokens here because 's' is already a wide string.
+    */
+    Print((CHAR16*)s);
 }
 static void *api_malloc(UINTN size) {
     void *p = NULL;
@@ -205,6 +219,7 @@ static EFI_STATUS read_entire_file_from_image(EFI_HANDLE ImageHandle, EFI_SYSTEM
 
     Status = uefi_call_wrapper(ST->BootServices->HandleProtocol, 3, ImageHandle, &LoadedImageProtocol, (void**)&LoadedImage);
     if (EFI_ERROR(Status)) return Status;
+    /* HandleProtocol on the device handle to get the filesystem interface */
     Status = uefi_call_wrapper(ST->BootServices->HandleProtocol, 3, LoadedImage->DeviceHandle, &SimpleFileSystemProtocol, (void**)&SimpleFs);
     if (EFI_ERROR(Status)) return Status;
     Status = uefi_call_wrapper(SimpleFs->OpenVolume, 2, SimpleFs, &Root);
@@ -250,7 +265,7 @@ static EFI_STATUS allocate_pages_for_segment(EFI_SYSTEM_TABLE *ST, EFI_PHYSICAL_
     if (allocate_at_address) {
         st = uefi_call_wrapper(ST->BootServices->AllocatePages, 4, AllocateAddress, mtype, pages, addr);
     } else {
-        st = uefi_call_wrapper(ST->BootServices->AllocatePages, 4, AnyPages, mtype, pages, addr);
+        st = uefi_call_wrapper(ST->BootServices->AllocatePages, 4, AllocateAnyPages, mtype, pages, addr);
     }
     return st;
 }
@@ -399,7 +414,7 @@ static EFI_STATUS load_elf_from_buffer(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE 
                 }
                 return st;
             } else {
-                /* try AnyPages */
+                /* try AnyPages (AllocateAnyPages) */
                 EFI_PHYSICAL_ADDRESS a2 = 0;
                 st = allocate_pages_for_segment(ST, &a2, segs[s].pages, segs[s].mtype, FALSE);
                 if (EFI_ERROR(st)) {

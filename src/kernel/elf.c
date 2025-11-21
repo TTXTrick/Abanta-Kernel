@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>   /* for snprintf */
 #include "elf.h"
 
 /*

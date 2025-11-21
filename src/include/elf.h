@@ -167,4 +167,12 @@ typedef struct {
 #define R_X86_64_DTPOFF64  17
 #define R_X86_64_TPOFF64   18
 
+typedef struct {
+    Elf64_Ehdr *eh;
+    Elf64_Shdr *shdrs;
+    const char *shstr;
+    size_t shnum;
+    size_t shstrndx;
+} elf_sections_t;
+
 #endif

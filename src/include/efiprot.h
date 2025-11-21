@@ -1,74 +1,108 @@
-#ifndef EFIPROT_H
-#define EFIPROT_H
+#ifndef _EFI_PROT_H_
+#define _EFI_PROT_H_
 
-#include <stdint.h>
 #include "efidef.h"
 
-// SIMPLE TEXT INPUT
+/*
+ * EFI Input Key structure
+ */
 typedef struct {
-    EFI_STATUS (*Reset)(void *Self, BOOLEAN ExtendedVerification);
-    EFI_STATUS (*ReadKeyStroke)(void *Self, void *Key);
-    void *WaitForKey;
-} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+    UINT16 ScanCode;
+    CHAR16 UnicodeChar;
+} EFI_INPUT_KEY;
 
-// BOOT SERVICES
-typedef struct {
-    EFI_TABLE_HEADER Hdr;
+/*
+ * Forward declarations for simple text input
+ */
+typedef struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 
+typedef EFI_STATUS (*EFI_INPUT_RESET)(
+    EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This,
+    BOOLEAN ExtendedVerification
+);
+
+typedef EFI_STATUS (*EFI_INPUT_READ_KEY)(
+    EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This,
+    EFI_INPUT_KEY *Key
+);
+
+/*
+ * Simple Text Input Protocol
+ */
+struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
+    EFI_INPUT_RESET      Reset;
+    EFI_INPUT_READ_KEY   ReadKeyStroke;
+    EFI_EVENT            WaitForKey;
+};
+
+/*
+ * Boot Services function pointer typedefs
+ */
+
+typedef EFI_STATUS (*EFI_ALLOCATE_PAGES)(
+    UINT32 Type,
+    EFI_MEMORY_TYPE MemoryType,
+    UINTN Pages,
+    EFI_PHYSICAL_ADDRESS *Memory
+);
+
+typedef EFI_STATUS (*EFI_FREE_PAGES)(
+    EFI_PHYSICAL_ADDRESS Memory,
+    UINTN Pages
+);
+
+typedef EFI_STATUS (*EFI_GET_MEMORY_MAP)(
+    UINTN *MemoryMapSize,
+    EFI_MEMORY_DESCRIPTOR *MemoryMap,
+    UINTN *MapKey,
+    UINTN *DescriptorSize,
+    UINT32 *DescriptorVersion
+);
+
+typedef EFI_STATUS (*EFI_EXIT_BOOT_SERVICES)(
+    EFI_HANDLE ImageHandle,
+    UINTN MapKey
+);
+
+/*
+ * EFI_BOOT_SERVICES structure
+ */
+typedef struct _EFI_BOOT_SERVICES {
+    EFI_TABLE_HEADER                Hdr;
+
+    // Task Priority Services (unused by most loaders)
     void *RaiseTPL;
     void *RestoreTPL;
 
-    EFI_STATUS (*AllocatePages)(int Type, int MemoryType, UINT64 Pages, UINT64 *Memory);
-    EFI_STATUS (*FreePages)(UINT64, UINT64);
+    // Memory Services
+    EFI_ALLOCATE_PAGES              AllocatePages;
+    EFI_FREE_PAGES                  FreePages;
+    void *GetMemoryMap; // pointer patched below
+    void *AllocatePool;
+    void *FreePool;
 
-    EFI_STATUS (*GetMemoryMap)(UINT64 *MemoryMapSize, void *MemoryMap,
-                               UINT64 *MapKey, UINT64 *DescriptorSize,
-                               UINT32 *DescriptorVersion);
+    // Event, Timer, Protocol, Image Services (we only define a few)
+    void *CreateEvent;
+    void *SetTimer;
+    void *WaitForEvent;
+    void *SignalEvent;
+    void *CloseEvent;
+    void *CheckEvent;
 
-    EFI_STATUS (*AllocatePool)(int PoolType, UINT64 Size, void **Buffer);
-    EFI_STATUS (*FreePool)(void *Buffer);
-
-    EFI_STATUS (*CreateEvent)(uint32_t Type, UINT64 NotifyTpl,
-                              void *NotifyFunction, void *NotifyContext, void **Event);
-
-    EFI_STATUS (*SetTimer)(void *Event, uint64_t Type, uint64_t TriggerTime);
-
-    EFI_STATUS (*WaitForEvent)(UINT64 NumberOfEvents, void **Event, UINT64 *Index);
-
-    EFI_STATUS (*SignalEvent)(void *Event);
-    EFI_STATUS (*CloseEvent)(void *Event);
-
+    // Misc
     void *InstallProtocolInterface;
     void *UninstallProtocolInterface;
-
-    EFI_STATUS (*HandleProtocol)(EFI_HANDLE Handle, void *Protocol, void **Interface);
-
+    void *HandleProtocol;
     void *RegisterProtocolNotify;
 
-    void *LocateHandle;
-    void *LocateDevicePath;
-
-    void *InstallConfigurationTable;
-
-    void (*LoadImage)(void);
-    void (*StartImage)(void);
-
+    // More Boot Services...
+    void *LoadImage;
+    void *StartImage;
     void *Exit;
     void *UnloadImage;
-    void *ExitBootServices;
 
-    // many more to add later if needed…
+    EFI_EXIT_BOOT_SERVICES ExitBootServices;
+
 } EFI_BOOT_SERVICES;
-
-// RUNTIME SERVICES (not used much yet)
-typedef struct {
-    EFI_TABLE_HEADER Hdr;
-    // leave empty now
-} EFI_RUNTIME_SERVICES;
-
-typedef struct {
-    EFI_GUID VendorGuid;
-    void *VendorTable;
-} EFI_CONFIGURATION_TABLE;
 
 #endif

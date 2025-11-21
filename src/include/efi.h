@@ -1,30 +1,43 @@
-#ifndef EFI_H
-#define EFI_H
+#ifndef _EFI_H_
+#define _EFI_H_
 
-#include <stdint.h>
 #include "efidef.h"
-#include "efiprot.h"
-#include "eficon.h"
 
-typedef struct {
-    EFI_TABLE_HEADER Hdr;
-    CHAR16 *FirmwareVendor;
-    uint32_t FirmwareRevision;
+/*
+ * Forward declarations
+ */
+struct _EFI_SYSTEM_TABLE;
+struct _EFI_BOOT_SERVICES;
+struct _EFI_RUNTIME_SERVICES;
+struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 
-    EFI_HANDLE ConsoleInHandle;
-    EFI_SIMPLE_TEXT_INPUT_PROTOCOL *ConIn;
+/*
+ * EFI_SYSTEM_TABLE
+ */
+typedef struct _EFI_SYSTEM_TABLE {
+    EFI_TABLE_HEADER                       Hdr;
 
-    EFI_HANDLE ConsoleOutHandle;
-    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
+    CHAR16                                 *FirmwareVendor;
+    UINT32                                  FirmwareRevision;
 
-    EFI_HANDLE StandardErrorHandle;
-    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
+    EFI_HANDLE                              ConsoleInHandle;
+    struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL *ConIn;
 
-    EFI_RUNTIME_SERVICES *RuntimeServices;
-    EFI_BOOT_SERVICES *BootServices;
+    EFI_HANDLE                              ConsoleOutHandle;
+    struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
 
-    uint64_t NumberOfTableEntries;
-    EFI_CONFIGURATION_TABLE *ConfigurationTable;
+    EFI_HANDLE                              StandardErrorHandle;
+    struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *StdErr;
+
+    struct _EFI_RUNTIME_SERVICES           *RuntimeServices;
+    struct _EFI_BOOT_SERVICES              *BootServices;
+
+    UINTN                                   NumberOfTableEntries;
+    void                                   *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
+
+extern EFI_SYSTEM_TABLE *ST;
+extern struct _EFI_BOOT_SERVICES *BS;
 
 #endif

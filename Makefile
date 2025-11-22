@@ -1,9 +1,15 @@
+# ===============================
+# Abanta UEFI Kernel (GNU-EFI)
+# Fully working Makefile for Debian 13
+# ===============================
+
 TARGET = abanta
 SRC = src/main.c
 
 EFIINC = /usr/include/efi
 EFILIB = /usr/lib
 
+# Compiler flags for GNU-EFI
 CFLAGS = -I$(EFIINC) \
          -I$(EFIINC)/protocol \
          -fshort-wchar \
@@ -12,6 +18,7 @@ CFLAGS = -I$(EFIINC) \
          -fpic \
          -Wall -Wextra -O2
 
+# Linker flags for GNU-EFI
 LDFLAGS = -T $(EFILIB)/elf_x86_64_efi.lds \
           -shared \
           -Bsymbolic \
@@ -20,30 +27,42 @@ LDFLAGS = -T $(EFILIB)/elf_x86_64_efi.lds \
           -L$(EFILIB) \
           -lefi -lgnuefi
 
-all: build/$(TARGET).efi
+# Output directories
+OBJ = build/$(TARGET).o
+SO = build/$(TARGET).so
+EFI = build/$(TARGET).efi
 
-build/$(TARGET).o: $(SRC)
+# ===============================
+# Build Rules
+# ===============================
+
+all: $(EFI)
+
+build:
 	mkdir -p build
-	gcc $(CFLAGS) -c $(SRC) -o build/$(TARGET).o
 
-build/$(TARGET).so: build/$(TARGET).o
-	ld $(LDFLAGS) build/$(TARGET).o -o build/$(TARGET).so
+$(OBJ): $(SRC) | build
+	gcc $(CFLAGS) -c $(SRC) -o $(OBJ)
 
-build/$(TARGET).efi: build/$(TARGET).so
+$(SO): $(OBJ)
+	ld $(LDFLAGS) $(OBJ) -o $(SO)
+
+$(EFI): $(SO)
 	objcopy -j .text -j .sdata -j .data -j .dynamic \
 	        -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
 	        --target=efi-app-x86_64 \
-	        build/$(TARGET).so build/$(TARGET).efi
+	        $(SO) $(EFI)
 
 clean:
 	rm -rf build
 
-#
-# Run the EFI binary in QEMU’s UEFI firmware
-#
+# ===============================
+# QEMU RUN (Debian 13 default OVMF paths)
+# ===============================
+
 run: all
 	qemu-system-x86_64 \
-		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.fd \
-		-drive if=pflash,format=raw,file=/usr/share/edk2/x64/OVMF_VARS.fd \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+		-drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS.fd \
 		-drive format=raw,file=fat:rw:build \
 		-m 512M

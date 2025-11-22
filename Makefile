@@ -12,10 +12,11 @@ CFLAGS = -I$(EFIINC) \
          -fpic \
          -Wall -Wextra -O2
 
-LDFLAGS = -T /usr/lib/elf_x86_64_efi.lds \
+LDFLAGS = -T $(EFILIB)/elf_x86_64_efi.lds \
           -shared \
           -Bsymbolic \
           -nostdlib \
+          $(EFILIB)/crt0-efi-x86_64.o \
           -L$(EFILIB) \
           -lefi -lgnuefi
 
@@ -31,7 +32,6 @@ build/$(TARGET).so: build/$(TARGET).o
 build/$(TARGET).efi: build/$(TARGET).so
 	objcopy -j .text -j .sdata -j .data -j .dynamic \
 	        -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
-	        -j .reltext -j .reldata -j .relrodata \
 	        --target=efi-app-x86_64 \
 	        build/$(TARGET).so build/$(TARGET).efi
 

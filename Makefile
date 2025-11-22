@@ -37,3 +37,13 @@ build/$(TARGET).efi: build/$(TARGET).so
 
 clean:
 	rm -rf build
+
+#
+# Run the EFI binary in QEMU’s UEFI firmware
+#
+run: all
+	qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.fd \
+		-drive if=pflash,format=raw,file=/usr/share/edk2/x64/OVMF_VARS.fd \
+		-drive format=raw,file=fat:rw:build \
+		-m 512M

@@ -2,16 +2,30 @@
 #include <efilib.h>
 
 EFI_STATUS
-EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
 
-    Print(L"Abanta Kernel Loaded via GNU-EFI!\n");
-    Print(L"Hello from UEFI environment.\n");
+    Print(L"Abanta Minimal Kernel Booted!\n");
 
-    // Wait for key press
-    Print(L"Press any key to exit...\n");
-    WaitForSingleEvent(SystemTable->ConIn->WaitForKey, 0);
+    CHAR16 Buffer[128];
+    UINTN BufferSize;
+
+    while (1) {
+        // New prompt
+        Print(L"abanta> ");
+
+        BufferSize = sizeof(Buffer);
+        Input(L"", Buffer, &BufferSize);
+
+        // Basic “exit” command
+        if (StrCmp(Buffer, L"exit") == 0) {
+            Print(L"Exiting Abanta shell...\n");
+            break;
+        }
+
+        // Echo command
+        Print(L"You typed: %s\n", Buffer);
+    }
 
     return EFI_SUCCESS;
 }

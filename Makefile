@@ -1,35 +1,37 @@
-# Abanta UEFI Kernel – Single Makefile Build (EDK2 Headers)
+# Abanta UEFI Kernel — GNU-EFI build
+
+ARCH = x86_64
+GNU_EFI = /usr/lib/$(ARCH)-linux-gnu/gnu-efi
 
 CC = gcc
-LD = gcc
+LD = ld
+OBJCOPY = objcopy
 
 SRC = src
 BUILD = build
 BIN = bin
 
-# Path to EDK2 headers inside your repo
-EDK2 = edk2
-
 CFLAGS = \
-    -I$(EDK2)/MdePkg/Include \
-    -I$(EDK2)/MdePkg/Include/X64 \
-    -I$(EDK2)/MdePkg/Include/Protocol \
-    -I$(EDK2)/MdePkg/Include/IndustryStandard \
-    -fshort-wchar -mno-red-zone -fvisibility=hidden \
-    -Wall -Wextra -O2 -fPIC
+	-I/usr/include/efi \
+	-I/usr/include/efi/protocol \
+	-fshort-wchar \
+	-mno-red-zone \
+	-fno-stack-protector \
+	-fpic \
+	-fno-pic \
+	-Wall -Wextra -O2
 
 LDFLAGS = \
-    -nostdlib \
-    -Wl,--subsystem=efi_application \
-    -Wl,--entry=efi_main \
-    -shared -Bsymbolic
+	-nostdlib \
+	-T $(GNU_EFI)/elf_$(ARCH)_efi.lds \
+	-shared -Bsymbolic \
+	-L$(GNU_EFI) \
+	-lefi -lgnuefi
 
 SRCS = $(wildcard $(SRC)/*.c)
 OBJS = $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SRCS))
 
-EFI = $(BIN)/abanta.efi
-
-.PHONY: all clean run
+EFI = $(BIN)/BOOTX64.EFI
 
 all: $(EFI)
 
@@ -43,23 +45,10 @@ $(BUILD)/%.o: $(SRC)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(EFI): $(OBJS) | $(BIN)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+	$(LD) $(LDFLAGS) -o $(BIN)/abanta.so $(OBJS)
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic \
+	-j .dynsym  -j .rel -j .rela -j .rel.* -j .rela.* \
+	--target=efi-app-$(ARCH) $(BIN)/abanta.so $(EFI)
 
 clean:
-	rm -rf $(BUILD) $(BIN) fat.img
-
-# QEMU UEFI Test
-OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
-OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS.fd
-
-run: all
-	rm -f fat.img
-	dd if=/dev/zero of=fat.img bs=1M count=64
-	mkfs.vfat fat.img
-	mmd -i fat.img ::/EFI
-	mmd -i fat.img ::/EFI/BOOT
-	mcopy -i fat.img $(EFI) ::/EFI/BOOT/BOOTX64.EFI
-	qemu-system-x86_64 -m 1024 \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
-		-hda fat.img
+	rm -rf $(BUILD) $(BIN)

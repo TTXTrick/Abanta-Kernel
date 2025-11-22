@@ -2,7 +2,7 @@
 Just a minimalist PC kernel
 
 First, there are a few install dependencies. Run ```sudo apt update
-sudo apt install -y gcc binutils qemu-system-x86 mtools ovmf make```.
+sudo apt install -y gcc binutils qemu-system-x86 mtools ovmf make```
 
 # Run with QEMU locally
 In order to run this in QEMU,

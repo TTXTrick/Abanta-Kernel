@@ -1,39 +1,110 @@
-TARGET = abanta
-SRC = src/main.c
+#include <efi.h>
+#include <efilib.h>
 
-EFIINC = /usr/include/efi
-EFILIB = /usr/lib
+EFI_STATUS
+EFIAPI
+efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+{
+    InitializeLib(ImageHandle, SystemTable);
 
-CFLAGS = -I$(EFIINC) \
-         -I$(EFIINC)/protocol \
-         -fshort-wchar \
-         -mno-red-zone \
-         -fno-stack-protector \
-         -fpic \
-         -Wall -Wextra -O2
+    Print(L"[Abanta] Bootloader started\n");
 
-LDFLAGS = -T $(EFILIB)/elf_x86_64_efi.lds \
-          -shared \
-          -Bsymbolic \
-          -nostdlib \
-          $(EFILIB)/crt0-efi-x86_64.o \
-          -L$(EFILIB) \
-          -lefi -lgnuefi
+    EFI_STATUS Status;
+    EFI_LOADED_IMAGE *LoadedImage;
+    EFI_FILE_IO_INTERFACE *FileSystem;
+    EFI_FILE_HANDLE Volume;
+    EFI_FILE_HANDLE File;
+    EFI_FILE_INFO *FileInfo;
 
-all: build/$(TARGET).efi
+    //
+    // Get LoadedImage protocol
+    //
+    Status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        ImageHandle,
+        &gEfiLoadedImageProtocolGuid,
+        (void **)&LoadedImage
+    );
 
-build/$(TARGET).o: $(SRC)
-	mkdir -p build
-	gcc $(CFLAGS) -c $(SRC) -o build/$(TARGET).o
+    if (EFI_ERROR(Status)) {
+        Print(L"Failed to get LoadedImage protocol: %r\n", Status);
+        return Status;
+    }
 
-build/$(TARGET).so: build/$(TARGET).o
-	ld $(LDFLAGS) build/$(TARGET).o -o build/$(TARGET).so
+    //
+    // Get Simple FileSystem protocol
+    //
+    Status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        LoadedImage->DeviceHandle,
+        &gEfiSimpleFileSystemProtocolGuid,
+        (void **)&FileSystem
+    );
 
-build/$(TARGET).efi: build/$(TARGET).so
-	objcopy -j .text -j .sdata -j .data -j .dynamic \
-	        -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
-	        --target=efi-app-x86_64 \
-	        build/$(TARGET).so build/$(TARGET).efi
+    if (EFI_ERROR(Status)) {
+        Print(L"Failed to get FileSystem protocol: %r\n", Status);
+        return Status;
+    }
 
-clean:
-	rm -rf build
+    //
+    // Open root directory
+    //
+    Status = uefi_call_wrapper(FileSystem->OpenVolume, 2, FileSystem, &Volume);
+
+    if (EFI_ERROR(Status)) {
+        Print(L"Failed to open volume: %r\n", Status);
+        return Status;
+    }
+
+    //
+    // Open kernel.bin
+    //
+    Status = uefi_call_wrapper(
+        Volume->Open,
+        5,
+        Volume,
+        &File,
+        L"kernel.bin",
+        EFI_FILE_MODE_READ,
+        0
+    );
+
+    if (EFI_ERROR(Status)) {
+        Print(L"kernel.bin not found: %r\n", Status);
+        return Status;
+    }
+
+    //
+    // Read file info to get file size
+    //
+    UINTN InfoSize = SIZE_OF_EFI_FILE_INFO + 200;
+
+    Status = uefi_call_wrapper(BS->AllocatePool,
+                               3,
+                               EfiLoaderData,
+                               InfoSize,
+                               (void **)&FileInfo);
+
+    if (EFI_ERROR(Status)) {
+        Print(L"Failed to allocate pool: %r\n", Status);
+        return Status;
+    }
+
+    Status = uefi_call_wrapper(File->GetInfo,
+                               4,
+                               File,
+                               &gEfiFileInfoGuid,
+                               &InfoSize,
+                               FileInfo);
+
+    if (EFI_ERROR(Status)) {
+        Print(L"GetInfo failed: %r\n", Status);
+        return Status;
+    }
+
+    Print(L"kernel.bin size = %lu bytes\n", FileInfo->FileSize);
+
+    return EFI_SUCCESS;
+}

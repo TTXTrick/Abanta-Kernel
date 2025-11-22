@@ -32,10 +32,6 @@ OBJ = build/$(TARGET).o
 SO = build/$(TARGET).so
 EFI = build/$(TARGET).efi
 
-# ===============================
-# Build Rules
-# ===============================
-
 all: $(EFI)
 
 build:
@@ -57,12 +53,12 @@ clean:
 	rm -rf build
 
 # ===============================
-# QEMU RUN (Debian 13 default OVMF paths)
+# QEMU RUN (Debian 13 OVMF 4M files)
 # ===============================
 
 run: all
 	qemu-system-x86_64 \
-		-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
-		-drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS.fd \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+		-drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
 		-drive format=raw,file=fat:rw:build \
 		-m 512M

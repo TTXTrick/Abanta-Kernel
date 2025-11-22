@@ -1,4 +1,5 @@
 #include <Uefi.h>
+
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiLib.h>
@@ -11,17 +12,16 @@ EFI_STATUS
 EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
-    // Initialize UEFI library
-    InitializeLib(ImageHandle, SystemTable);
-
-    SystemTable->ConOut->ClearScreen(SystemTable->ConOut);
+    //
+    // EDK2 does NOT use InitializeLib(). Print() works immediately.
+    //
     Print(L"Abanta UEFI Kernel\n");
-    Print(L"Building environment OK.\n\n");
+    Print(L"EDK2 Environment OK.\n\n");
 
     EFI_STATUS Status;
 
     //
-    // Get LOADED_IMAGE_PROTOCOL from ImageHandle
+    // Get LoadedImage protocol
     //
     EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
     Status = SystemTable->BootServices->HandleProtocol(
@@ -31,12 +31,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     );
 
     if (EFI_ERROR(Status)) {
-        Print(L"[ERR] Unable to get LoadedImage protocol\n");
+        Print(L"[ERR] Could not load LoadedImage protocol\n");
         return Status;
     }
 
     //
-    // Get SimpleFileSystem protocol from the device the kernel was loaded from
+    // Get SimpleFileSystem protocol
     //
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FS;
     Status = SystemTable->BootServices->HandleProtocol(
@@ -46,33 +46,32 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     );
 
     if (EFI_ERROR(Status)) {
-        Print(L"[ERR] Unable to get SimpleFileSystem protocol\n");
+        Print(L"[ERR] Could not load SimpleFileSystem protocol\n");
         return Status;
     }
 
     //
-    // Open the root directory
+    // Open root directory
     //
     EFI_FILE_PROTOCOL *Root;
     Status = FS->OpenVolume(FS, &Root);
 
     if (EFI_ERROR(Status)) {
-        Print(L"[ERR] Unable to open filesystem volume\n");
+        Print(L"[ERR] Could not open volume\n");
         return Status;
     }
 
-    Print(L"[OK] Volume opened.\n");
-    Print(L"Listing files:\n\n");
+    Print(L"[OK] FS mounted — listing files:\n\n");
 
     //
-    // Allocate a buffer for file info
+    // File info buffer
     //
-    UINTN BufferSize = sizeof(EFI_FILE_INFO) + 512;
+    UINTN BufferSize = sizeof(EFI_FILE_INFO) + 256;
     EFI_FILE_INFO *FileInfo = AllocateZeroPool(BufferSize);
 
     while (TRUE) {
 
-        BufferSize = sizeof(EFI_FILE_INFO) + 512;
+        BufferSize = sizeof(EFI_FILE_INFO) + 256;
         Status = Root->Read(Root, &BufferSize, FileInfo);
 
         if (EFI_ERROR(Status) || BufferSize == 0)
@@ -83,7 +82,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     FreePool(FileInfo);
 
-    Print(L"\nAbanta kernel finished.\n");
+    Print(L"\nDone.\n");
 
     return EFI_SUCCESS;
 }

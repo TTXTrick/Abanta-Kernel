@@ -1,7 +1,7 @@
 # Abanta UEFI Kernel – Single Makefile Build (EDK2 Headers)
 
 CC = gcc
-LD = ld
+LD = gcc
 
 SRC = src
 BUILD = build

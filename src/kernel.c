@@ -1,172 +1,174 @@
-/* Minimal freestanding x86_64 kernel for Abanta
- * - builds as ELF64
- * - simple VGA writer (text mode)
- * - PS/2 keyboard poll to implement a tiny shell "abanta>"
- *
- * This file is freestanding (no libc). Keep it small and clear.
- */
+#include "kernel.h"
 
-#include <stdint.h>
-#include <stddef.h>
+/* Minimal printing to VGA text buffer and small shell */
+static volatile unsigned short *VGA = (unsigned short *)0xB8000;
+static int cursor_row = 0, cursor_col = 0;
 
-/* I/O port helpers */
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+static void putchar(char c) {
+    if (c == '\n') {
+        cursor_col = 0;
+        cursor_row++;
+    } else {
+        VGA[cursor_row * 80 + cursor_col] = (unsigned short)c | (0x07 << 8);
+        cursor_col++;
+        if (cursor_col >= 80) {
+            cursor_col = 0;
+            cursor_row++;
+        }
+    }
+    if (cursor_row >= 25) {
+        /* scroll simple: move all up one row */
+        for (int r = 1; r < 25; ++r)
+            for (int c = 0; c < 80; ++c)
+                VGA[(r - 1) * 80 + c] = VGA[r * 80 + c];
+        /* clear last row */
+        int r = 24;
+        for (int c = 0; c < 80; ++c) VGA[r * 80 + c] = ' ' | (0x07 << 8);
+        cursor_row = 24;
+    }
 }
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+
+/* write string */
+static void puts(const char *s) {
+    while (*s) putchar(*s++);
+}
+
+/* convert scancode to ascii (very small map for keys 2..13 top row + letters)
+   We'll implement a tiny US layout map from set 1 scancodes (PS/2 port 0x60).
+   This is NOT comprehensive. It's sufficient to type lowercase letters, backspace and enter.
+*/
+static char scancode_map[256];
+static void init_scancode_map(void) {
+    for (int i = 0; i < 256; ++i) scancode_map[i] = 0;
+    scancode_map[0x02] = '1';
+    scancode_map[0x03] = '2';
+    scancode_map[0x04] = '3';
+    scancode_map[0x05] = '4';
+    scancode_map[0x06] = '5';
+    scancode_map[0x07] = '6';
+    scancode_map[0x08] = '7';
+    scancode_map[0x09] = '8';
+    scancode_map[0x0A] = '9';
+    scancode_map[0x0B] = '0';
+    scancode_map[0x0C] = '-';
+    scancode_map[0x0D] = '=';
+    scancode_map[0x10] = 'q';
+    scancode_map[0x11] = 'w';
+    scancode_map[0x12] = 'e';
+    scancode_map[0x13] = 'r';
+    scancode_map[0x14] = 't';
+    scancode_map[0x15] = 'y';
+    scancode_map[0x16] = 'u';
+    scancode_map[0x17] = 'i';
+    scancode_map[0x18] = 'o';
+    scancode_map[0x19] = 'p';
+    scancode_map[0x1E] = 'a';
+    scancode_map[0x1F] = 's';
+    scancode_map[0x20] = 'd';
+    scancode_map[0x21] = 'f';
+    scancode_map[0x22] = 'g';
+    scancode_map[0x23] = 'h';
+    scancode_map[0x24] = 'j';
+    scancode_map[0x25] = 'k';
+    scancode_map[0x26] = 'l';
+    scancode_map[0x2C] = 'z';
+    scancode_map[0x2D] = 'x';
+    scancode_map[0x2E] = 'c';
+    scancode_map[0x2F] = 'v';
+    scancode_map[0x30] = 'b';
+    scancode_map[0x31] = 'n';
+    scancode_map[0x32] = 'm';
+    scancode_map[0x39] = ' '; /* space */
+    scancode_map[0x1C] = '\n'; /* Enter */
+    scancode_map[0x0E] = '\b'; /* Backspace */
+}
+
+/* Read from PS/2 data port 0x60 (polling). Returns scancode (0 if none) */
+static inline unsigned char inb(unsigned short port) {
+    unsigned char ret;
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }
 
-/* VGA text-mode */
-#define VGA_WIDTH 80
-#define VGA_HEIGHT 25
-static uint16_t *vga = (uint16_t*)0xB8000;
-static uint8_t cursor_x = 0;
-static uint8_t cursor_y = 0;
-
-static inline uint16_t vga_entry(char c, uint8_t color) {
-    return (uint16_t)c | (uint16_t)color << 8;
-}
-
-static void vga_putchar(char c) {
-    if (c == '\n') {
-        cursor_x = 0;
-        cursor_y++;
-    } else {
-        vga[cursor_y * VGA_WIDTH + cursor_x] = vga_entry(c, 0x07);
-        cursor_x++;
-        if (cursor_x >= VGA_WIDTH) {
-            cursor_x = 0;
-            cursor_y++;
-        }
-    }
-    if (cursor_y >= VGA_HEIGHT) {
-        /* simple scroll up */
-        for (int y = 1; y < VGA_HEIGHT; ++y) {
-            for (int x = 0; x < VGA_WIDTH; ++x) {
-                vga[(y-1)*VGA_WIDTH + x] = vga[y*VGA_WIDTH + x];
-            }
-        }
-        /* clear last line */
-        for (int x = 0; x < VGA_WIDTH; ++x) vga[(VGA_HEIGHT-1)*VGA_WIDTH + x] = vga_entry(' ', 0x07);
-        cursor_y = VGA_HEIGHT - 1;
-    }
-}
-
-static void vga_puts(const char *s) {
-    while (*s) vga_putchar(*s++);
-}
-
-static void vga_printf(const char *s) {
-    vga_puts(s);
-}
-
-/* PS/2 keyboard basic scancode -> ASCII (set 1, unshifted) */
-static const char scancode_map[128] = {
-  0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
- '\t', 'q','w','e','r','t','y','u','i','o','p','[',']','\n',
-  0, /* control */
- 'a','s','d','f','g','h','j','k','l',';','\'','`', 0, '\\',
- 'z','x','c','v','b','n','m',',','.','/', 0, /* right shift */
- '*', 0, /* alt */
- ' ', /* space */
-  0, /* caps lock */
-  /* rest are 0 */
-};
-
-static char kb_getchar(void) {
-    /* Polling PS/2 status */
-    /* Wait for output buffer full (port 0x64 bit 0) */
-    while (!(inb(0x64) & 1)) {
-        /* spin */
-    }
-    uint8_t code = inb(0x60);
-    if (code & 0x80) { /* key release — ignore */
-        return 0;
-    }
-    uint8_t idx = code & 0x7f;
-    if (idx < sizeof(scancode_map)) return scancode_map[idx];
-    return 0;
-}
-
-/* Simple line editor for shell */
-#define SHELL_BUF 256
-
-static void shell_prompt(void) {
-    vga_puts("abanta> ");
-}
-
-void kernel_main(void) {
-    /* Clear screen */
-    for (int y=0; y<VGA_HEIGHT; ++y) for (int x=0; x<VGA_WIDTH; ++x) vga[(y*VGA_WIDTH)+x] = vga_entry(' ', 0x07);
-    cursor_x = 0; cursor_y = 0;
-
-    vga_printf("Abanta kernel (demo) — type 'help' then Enter\n\n");
-    shell_prompt();
-
-    char line[SHELL_BUF];
-    size_t len = 0;
-
+/* Wait for a scancode and translate to ascii, blocking */
+static char getch_block(void) {
     while (1) {
-        char ch = kb_getchar();
-        if (!ch) continue;
-        if (ch == '\r' || ch == '\n') {
-            /* newline */
-            vga_putchar('\n');
-            line[len] = '\0';
+        unsigned char s = inb(0x64); /* status port */
+        if (s & 1) { /* output buffer full */
+            unsigned char sc = inb(0x60);
+            /* ignore releases (scancodes >= 0x80) for simplicity */
+            if (sc & 0x80) continue;
+            char c = scancode_map[sc];
+            if (c) return c;
+        }
+    }
+}
+
+/* Tiny shell */
+void shell_loop(void) {
+    char line[128];
+    int len = 0;
+    puts("abanta> ");
+    while (1) {
+        char c = getch_block();
+        if (c == '\n') {
+            putchar('\n');
+            line[len] = 0;
             if (len == 0) {
-                shell_prompt();
+                puts("abanta> ");
                 continue;
             }
-            /* simple commands */
+            /* handle commands: help, echo, clear, reboot (makes QEMU exit via triple fault) */
             if (len == 4 && line[0]=='h' && line[1]=='e' && line[2]=='l' && line[3]=='p') {
-                vga_puts("Commands:\n");
-                vga_puts("  help   - show this message\n");
-                vga_puts("  echo   - echo following text (e.g. echo hello)\n");
-                vga_puts("  clear  - clear screen\n");
-                vga_puts("  halt   - halt CPU\n");
+                puts("Commands:\n help\n echo <text>\n clear\n reboot\n");
             } else if (len >= 5 && line[0]=='e' && line[1]=='c' && line[2]=='h' && line[3]=='o' && line[4]==' ') {
-                vga_puts(line + 5);
-                vga_putchar('\n');
-            } else if (len==5 && line[0]=='c' && line[1]=='l' && line[2]=='e' && line[3]=='a' && line[4]=='r') {
-                /* clear */
-                for (int y=0; y<VGA_HEIGHT; ++y) for (int x=0; x<VGA_WIDTH; ++x) vga[(y*VGA_WIDTH)+x] = vga_entry(' ', 0x07);
-                cursor_x = 0; cursor_y = 0;
-            } else if (len==4 && line[0]=='h' && line[1]=='a' && line[2]=='l' && line[3]=='t') {
-                vga_puts("Halting...\n");
+                puts(line + 5);
+                putchar('\n');
+            } else if (len == 5 && line[0]=='c' && line[1]=='l' && line[2]=='e' && line[3]=='a' && line[4]=='r') {
+                /* clear screen */
+                for (int r = 0; r < 25; ++r)
+                    for (int cc = 0; cc < 80; ++cc)
+                        VGA[r*80 + cc] = ' ' | (0x07 << 8);
+                cursor_row = 0;
+                cursor_col = 0;
+            } else if (len == 6 && line[0]=='r' && line[1]=='e' && line[2]=='b' && line[3]=='o' && line[4]=='o' && line[5]=='t') {
+                /* cause CPU halt loop (QEMU will show it) */
+                puts("Rebooting (halt)...\n");
                 for (;;) { __asm__ volatile ("hlt"); }
             } else {
-                vga_puts("Unknown command: ");
-                vga_puts(line);
-                vga_putchar('\n');
+                puts("Unknown command\n");
             }
+            /* new prompt */
             len = 0;
-            shell_prompt();
-            continue;
-        }
-        if (ch == '\b' || ch == 127) { /* backspace */
+            puts("abanta> ");
+        } else if (c == '\b') {
             if (len > 0) {
-                /* move cursor back and erase */
-                if (cursor_x == 0) { if (cursor_y>0) { cursor_y--; cursor_x = VGA_WIDTH - 1; } }
-                else cursor_x--;
-                vga[cursor_y * VGA_WIDTH + cursor_x] = vga_entry(' ', 0x07);
                 len--;
+                /* backspace on screen */
+                if (cursor_col > 0) {
+                    cursor_col--;
+                } else {
+                    if (cursor_row > 0) {
+                        cursor_row--;
+                        cursor_col = 79;
+                    }
+                }
+                VGA[cursor_row*80 + cursor_col] = ' ' | (0x07 << 8);
             }
-            continue;
-        }
-        /* printable */
-        if (len + 1 < SHELL_BUF && ch >= 32 && ch < 127) {
-            line[len++] = ch;
-            vga_putchar(ch);
+        } else {
+            if (len + 1 < (int)sizeof(line)) {
+                line[len++] = c;
+                putchar(c);
+            }
         }
     }
 }
 
-/* Provide the entry symbol for the linker script */
-void kernel_entry(void);
-void kernel_entry(void) {
-    kernel_main();
-    for (;;) __asm__ volatile ("hlt");
+/* Kernel entry from boot.S */
+void kernel_main(void) {
+    /* simple init */
+    init_scancode_map();
+    puts("Abanta kernel — enter 'abanta>' shell\n");
+    shell_loop();
+    for (;;) __asm__ volatile("hlt");
 }

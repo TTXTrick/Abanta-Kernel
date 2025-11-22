@@ -11,3 +11,5 @@ In your terminal, run ```cd Abanta-Kernel```.
 Then, clone the edk2 headers into your Abanta folder: ```git clone https://github.com/tianocore/edk2```.
 Now, to build abanta.efi, run ```make```. To clean, run ```make clean```.
 Run the kernel in QEMU with ```make run```.
+
+You are also free to create your own full OS distribution of Abanta.

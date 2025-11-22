@@ -1,0 +1,5 @@
+build/
+*.fd
+*.so
+*.o
+*.efi

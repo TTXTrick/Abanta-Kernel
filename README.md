@@ -1,5 +1,5 @@
 # Abanta Kernel
-Just a minimalist PC kernel
+Just an open-source PC kernel
 
 First, there are a few install dependencies. Run ```sudo apt update
 sudo apt install -y gcc binutils qemu-system-x86 mtools ovmf make```

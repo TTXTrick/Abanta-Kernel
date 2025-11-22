@@ -5,7 +5,6 @@
 
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
-#include <Protocol/FileHandle.h>
 #include <Guid/FileInfo.h>
 
 EFI_STATUS

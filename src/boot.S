@@ -1,109 +1,50 @@
-; Minimal boot code that contains a Multiboot2 info header (so GRUB recognizes it)
-; then performs CPU setup and enters long mode, then jumps to C entry 'kernel_main'.
-; NASM (elf64) syntax.
+/* src/boot.S - GAS (GNU assembler) syntax, 64-bit entry stub for an ELF64 kernel
+ *
+ * - Assembles with: gcc -c src/boot.S -m64
+ * - Linkable into an ELF64 kernel where the C entry is `kernel_main`.
+ * - Sets up a simple stack and calls kernel_main.
+ *
+ * Notes:
+ * - GRUB (or your bootloader) must load the ELF and jump to _start in 64-bit mode.
+ * - kernel_main should be provided in C (or asm) and follow the SysV AMD64 calling convention:
+ *      void kernel_main(void);
+ *
+ * - If you need a multiboot header you should add it (multiboot2 header) in a separate section.
+ *   This file purposely stays minimal to avoid complexity.
+ */
 
-BITS 64
-global start
-extern kernel_main
+    .section .text
+    .globl  _start
+    .type   _start, @function
 
-; --- Multiboot2 header (in .multiboot section) ---
-section .multiboot
-align 8
-; magic and flags per multiboot2 spec — simple header setting
-dd 0xE85250D6            ; magic
-dd 0                     ; architecture, checksum placeholder (not needed here)
-dd 0x00000002            ; header flags (minimum)
-dd 0                     ; header checksum (ignored by GRUB if flags minimal)
+_start:
+    /* Clear frame pointer (makes backtraces sensible and consistent) */
+    xorq    %rbp, %rbp
 
-; NOTE: Many multiboot2 features are ignored here. This header is intentionally minimal
-; to allow GRUB to detect and load the kernel ELF.
+    /* Load stack pointer to top of our stack (stack grows down).
+       We use RIP-relative addressing so this file is position-independent. */
+    leaq    stack_top(%rip), %rsp
 
-section .text.boot
-align 16
-start:
-    ; We expect GRUB to have loaded the kernel and left CPU in protected or long mode
-    ; Many GRUB setups will jump to kernel with unsupported state; for safety, we re-init
-    ; a minimal protected-mode -> long-mode switch sequence here.
-    ; For brevity we assume CPU can be switched from whatever state into long mode.
-    ; We'll set up a very small 4-level page table (identity map low 2MB + higher map).
-    cli
+    /* Align stack to 16 bytes before calling C code (ABI requirement) */
+    andq    $-16, %rsp
 
-    ; load GDT for long mode
-    lgdt [gdt_descriptor]
+    /* Call the C kernel entry point. Provide no args (kernel_main must be void kernel_main(void)). */
+    call    kernel_main
 
-    ; enable PAE and set up PML4 etc.
-    ; allocate page tables inline in code (they reside in .bss area below).
-    mov rax, cr4
-    or rax, 1 << 5        ; set PAE (bit 5)
-    mov cr4, rax
-
-    ; set up page tables base: use the page tables created in memory below
-    lea rax, [pml4_table]
-    mov cr3, rax
-
-    ; enable long mode via EFER
-    mov ecx, 0xC0000080   ; MSR_EFER
-    rdmsr
-    or eax, 0x00000100    ; set LME (bit 8) in EFER
-    wrmsr
-
-    ; enable paging (set PG bit in CR0)
-    mov rax, cr0
-    or rax, 0x80000000
-    mov cr0, rax
-
-    ; far jump to 64-bit code segment selector
-    jmp 0x08:long_mode_entry
-
-; 64-bit entry
-long_mode_entry:
-    ; set up data segment registers
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-
-    ; call C kernel entry
-    extern kernel_main
-    call kernel_main
-
+/* If kernel_main returns, halt the CPU in a tight loop. */
+.halt_loop:
+    cli                     /* disable interrupts */
     hlt
-    jmp $
+    jmp     .halt_loop
 
-; ----------------------------
-; simple GDT (null, code, data)
-; ----------------------------
-section .data
-align 8
-gdt_start:
-    dq 0x0000000000000000
-    dq 0x00AF9A000000FFFF    ; code: base=0, limit=0xFFFFF, long-mode compatible
-    dq 0x00AF92000000FFFF    ; data
-gdt_end:
+    .size _start, .-_start
 
-gdt_descriptor:
-    dw gdt_end - gdt_start - 1
-    dq gdt_start
-
-; ----------------------------
-; Very minimal page tables — identity map 0-2MB and map kernel at 1MB
-; We'll allocate PML4, PDPT, PD and mark present.
-; ----------------------------
-align 4096
-pml4_table:
-    dq pdpt_table | 3
-
-align 4096
-pdpt_table:
-    dq pd_table | 3
-
-align 4096
-pd_table:
-    ; 2MB page at 0 (maps first 2MB)
-    dq 0x00000000 | 0x83  ; present, RW, 2MB (PS)
-    ; remaining entries zero
-    times 511 dq 0
-
-; end of boot.S
+/* ------------------------------
+   Simple stack (BSS style)
+   16 KiB stack, aligned
+   ------------------------------ */
+    .section .bss
+    .align 16
+stack:
+    .skip 16384             /* reserve 16 KiB */
+stack_top:

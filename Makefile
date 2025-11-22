@@ -1,42 +1,66 @@
-TARGET     := abanta.efi
-OBJ        := build/abanta.o
+# Makefile for Abanta "kernel-like" UEFI app (gnu-efi)
+# Adjust OVMF paths and GNU_EFI paths if needed.
 
-EFI_CFLAGS := -I/usr/include/efi -I/usr/include/efi/protocol \
-              -fshort-wchar -mno-red-zone -fno-stack-protector \
-              -fpic -Wall -Wextra -O2
+GNU_EFI_DIR ?= /usr
+BINUTILS_PREFIX ?=
 
-EFI_LDFLAGS := -T /usr/lib/elf_x86_64_efi.lds -shared -Bsymbolic -nostdlib \
-               /usr/lib/crt0-efi-x86_64.o -L/usr/lib -lefi -lgnuefi
+CC = $(BINUTILS_PREFIX)gcc
+LD = $(BINUTILS_PREFIX)ld
+OBJCOPY = $(BINUTILS_PREFIX)objcopy
 
-all: build $(TARGET)
+SRC = src
+BUILD = build
+BIN = build        # we put fat dir directly under build for easier run target
 
-build:
-	mkdir -p build
+CFLAGS = -I$(GNU_EFI_DIR)/include -I$(GNU_EFI_DIR)/include/efi -I$(GNU_EFI_DIR)/include/efi/protocol \
+         -fshort-wchar -mno-red-zone -fno-stack-protector -fpic -Wall -Wextra -O2
 
-$(OBJ): src/main.c
-	gcc $(EFI_CFLAGS) -c src/main.c -o $(OBJ)
+LDFLAGS = -nostdlib -znocombreloc -T $(GNU_EFI_DIR)/lib/elf_x86_64_efi.lds -shared -Bsymbolic
 
-$(TARGET): $(OBJ)
-	ld $(EFI_LDFLAGS) $(OBJ) -o build/abanta.so
-	objcopy -j .text -j .sdata -j .data -j .dynamic \
-	        -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
-	        --target=efi-app-x86_64 \
-	        build/abanta.so build/$(TARGET)
+SRCS = $(wildcard $(SRC)/*.c)
+OBJS = $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SRCS))
 
-# Copy OVMF files into repo (must be writable)
-setup:
-	cp /usr/share/OVMF/OVMF_CODE_4M.fd OVMF_CODE.fd
-	cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS.fd
-	chmod +w OVMF_VARS.fd
-	@echo "Setup complete."
+EFI_SO = $(BUILD)/abanta.so
+EFI = $(BUILD)/abanta.efi
 
-run: all
-	qemu-system-x86_64 \
-		-drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd \
-		-drive if=pflash,format=raw,file=OVMF_VARS.fd \
-		-drive format=raw,file=fat:rw:build \
-		-m 512M
+.PHONY: all clean run image
+
+all: $(EFI)
+
+$(BUILD):
+	mkdir -p $(BUILD)
+
+$(BUILD)/%.o: $(SRC)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(EFI_SO): $(OBJS) | $(BUILD)
+	$(LD) $(LDFLAGS) /usr/lib/crt0-efi-x86_64.o -L$(GNU_EFI_DIR)/lib -lefi -lgnuefi $(OBJS) -o $@
+
+# keep .so target for objcopy step
+$(EFI): $(EFI_SO)
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic \
+	  -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
+	  --target=efi-app-x86_64 \
+	  $(EFI_SO) $(EFI)
 
 clean:
-	rm -rf build
-	rm -f *.fd
+	rm -rf $(BUILD)
+
+# Run in QEMU with OVMF (edit these to the OVMF files on your system)
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE.fd
+OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS.fd
+
+# compact run target: create a small FAT image inside build/ and run QEMU
+run: all image
+	qemu-system-x86_64 -enable-kvm -m 1024 \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  -drive if=pflash,format=raw,file=$(OVMF_VARS) \
+	  -drive format=raw,file=fat:rw:$(BUILD) \
+	  -net none
+
+# Build a tiny FAT-formatted folder usable by qemu's fat driver (no sudo required)
+# Copies EFI binary to /EFI/BOOT/BOOTX64.EFI inside $(BUILD)
+image: $(EFI)
+	rm -rf $(BUILD)/EFI
+	mkdir -p $(BUILD)/EFI/BOOT
+	cp $(EFI) $(BUILD)/EFI/BOOT/BOOTX64.EFI

@@ -1,54 +1,39 @@
-# Abanta UEFI Kernel — GNU-EFI build
+TARGET = abanta
+SRC = src/main.c
 
-ARCH = x86_64
-GNU_EFI = /usr/lib/$(ARCH)-linux-gnu/gnu-efi
+EFIINC = /usr/include/efi
+EFILIB = /usr/lib
 
-CC = gcc
-LD = ld
-OBJCOPY = objcopy
+CFLAGS = -I$(EFIINC) \
+         -I$(EFIINC)/protocol \
+         -fshort-wchar \
+         -mno-red-zone \
+         -fno-stack-protector \
+         -fpic \
+         -Wall -Wextra -O2
 
-SRC = src
-BUILD = build
-BIN = bin
+LDFLAGS = -T /usr/lib/elf_x86_64_efi.lds \
+          -shared \
+          -Bsymbolic \
+          -nostdlib \
+          -L$(EFILIB) \
+          -lefi -lgnuefi
 
-CFLAGS = \
-	-I/usr/include/efi \
-	-I/usr/include/efi/protocol \
-	-fshort-wchar \
-	-mno-red-zone \
-	-fno-stack-protector \
-	-fpic \
-	-fno-pic \
-	-Wall -Wextra -O2
+all: build/$(TARGET).efi
 
-LDFLAGS = \
-	-nostdlib \
-	-T $(GNU_EFI)/elf_$(ARCH)_efi.lds \
-	-shared -Bsymbolic \
-	-L$(GNU_EFI) \
-	-lefi -lgnuefi
+build/$(TARGET).o: $(SRC)
+	mkdir -p build
+	gcc $(CFLAGS) -c $(SRC) -o build/$(TARGET).o
 
-SRCS = $(wildcard $(SRC)/*.c)
-OBJS = $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SRCS))
+build/$(TARGET).so: build/$(TARGET).o
+	ld $(LDFLAGS) build/$(TARGET).o -o build/$(TARGET).so
 
-EFI = $(BIN)/BOOTX64.EFI
-
-all: $(EFI)
-
-$(BUILD):
-	mkdir -p $(BUILD)
-
-$(BIN):
-	mkdir -p $(BIN)
-
-$(BUILD)/%.o: $(SRC)/%.c | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(EFI): $(OBJS) | $(BIN)
-	$(LD) $(LDFLAGS) -o $(BIN)/abanta.so $(OBJS)
-	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic \
-	-j .dynsym  -j .rel -j .rela -j .rel.* -j .rela.* \
-	--target=efi-app-$(ARCH) $(BIN)/abanta.so $(EFI)
+build/$(TARGET).efi: build/$(TARGET).so
+	objcopy -j .text -j .sdata -j .data -j .dynamic \
+	        -j .dynsym -j .rel -j .rela -j .rel.* -j .rela.* \
+	        -j .reltext -j .reldata -j .relrodata \
+	        --target=efi-app-x86_64 \
+	        build/$(TARGET).so build/$(TARGET).efi
 
 clean:
-	rm -rf $(BUILD) $(BIN)
+	rm -rf build

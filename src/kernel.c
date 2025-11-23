@@ -1,174 +1,160 @@
-#include "kernel.h"
+/* src/kernel.c
+ *
+ * Minimal 64-bit kernel with a tiny VGA text-mode shell prompt "abanta>".
+ * Builds freestanding: compiled with -ffreestanding, linked with linker.ld.
+ *
+ * keyboard: polls PS/2 controller port 0x60, converts scancode set 1 (simple)
+ * VGA: direct writes to 0xB8000 text buffer (80x25).
+ */
 
-/* Minimal printing to VGA text buffer and small shell */
-static volatile unsigned short *VGA = (unsigned short *)0xB8000;
-static int cursor_row = 0, cursor_col = 0;
+typedef unsigned long uint64_t;
+typedef unsigned int  uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char uint8_t;
+typedef unsigned long size_t;
 
-static void putchar(char c) {
-    if (c == '\n') {
-        cursor_col = 0;
-        cursor_row++;
-    } else {
-        VGA[cursor_row * 80 + cursor_col] = (unsigned short)c | (0x07 << 8);
-        cursor_col++;
-        if (cursor_col >= 80) {
-            cursor_col = 0;
-            cursor_row++;
-        }
-    }
-    if (cursor_row >= 25) {
-        /* scroll simple: move all up one row */
-        for (int r = 1; r < 25; ++r)
-            for (int c = 0; c < 80; ++c)
-                VGA[(r - 1) * 80 + c] = VGA[r * 80 + c];
-        /* clear last row */
-        int r = 24;
-        for (int c = 0; c < 80; ++c) VGA[r * 80 + c] = ' ' | (0x07 << 8);
-        cursor_row = 24;
-    }
+/* VGA text-mode */
+static volatile uint16_t *VGA = (uint16_t*)0xB8000;
+static int term_row = 0;
+static int term_col = 0;
+static const int TERM_COLS = 80;
+static const int TERM_ROWS = 25;
+
+/* Basic colors */
+enum {
+    VGA_COLOR_BLACK = 0,
+    VGA_COLOR_WHITE = 15,
+};
+
+static inline void outb(unsigned short port, unsigned char val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
-
-/* write string */
-static void puts(const char *s) {
-    while (*s) putchar(*s++);
-}
-
-/* convert scancode to ascii (very small map for keys 2..13 top row + letters)
-   We'll implement a tiny US layout map from set 1 scancodes (PS/2 port 0x60).
-   This is NOT comprehensive. It's sufficient to type lowercase letters, backspace and enter.
-*/
-static char scancode_map[256];
-static void init_scancode_map(void) {
-    for (int i = 0; i < 256; ++i) scancode_map[i] = 0;
-    scancode_map[0x02] = '1';
-    scancode_map[0x03] = '2';
-    scancode_map[0x04] = '3';
-    scancode_map[0x05] = '4';
-    scancode_map[0x06] = '5';
-    scancode_map[0x07] = '6';
-    scancode_map[0x08] = '7';
-    scancode_map[0x09] = '8';
-    scancode_map[0x0A] = '9';
-    scancode_map[0x0B] = '0';
-    scancode_map[0x0C] = '-';
-    scancode_map[0x0D] = '=';
-    scancode_map[0x10] = 'q';
-    scancode_map[0x11] = 'w';
-    scancode_map[0x12] = 'e';
-    scancode_map[0x13] = 'r';
-    scancode_map[0x14] = 't';
-    scancode_map[0x15] = 'y';
-    scancode_map[0x16] = 'u';
-    scancode_map[0x17] = 'i';
-    scancode_map[0x18] = 'o';
-    scancode_map[0x19] = 'p';
-    scancode_map[0x1E] = 'a';
-    scancode_map[0x1F] = 's';
-    scancode_map[0x20] = 'd';
-    scancode_map[0x21] = 'f';
-    scancode_map[0x22] = 'g';
-    scancode_map[0x23] = 'h';
-    scancode_map[0x24] = 'j';
-    scancode_map[0x25] = 'k';
-    scancode_map[0x26] = 'l';
-    scancode_map[0x2C] = 'z';
-    scancode_map[0x2D] = 'x';
-    scancode_map[0x2E] = 'c';
-    scancode_map[0x2F] = 'v';
-    scancode_map[0x30] = 'b';
-    scancode_map[0x31] = 'n';
-    scancode_map[0x32] = 'm';
-    scancode_map[0x39] = ' '; /* space */
-    scancode_map[0x1C] = '\n'; /* Enter */
-    scancode_map[0x0E] = '\b'; /* Backspace */
-}
-
-/* Read from PS/2 data port 0x60 (polling). Returns scancode (0 if none) */
 static inline unsigned char inb(unsigned short port) {
     unsigned char ret;
-    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }
 
-/* Wait for a scancode and translate to ascii, blocking */
-static char getch_block(void) {
-    while (1) {
-        unsigned char s = inb(0x64); /* status port */
-        if (s & 1) { /* output buffer full */
-            unsigned char sc = inb(0x60);
-            /* ignore releases (scancodes >= 0x80) for simplicity */
-            if (sc & 0x80) continue;
-            char c = scancode_map[sc];
-            if (c) return c;
-        }
+/* Put a character with attribute to VGA at current cursor */
+static void vga_putch_attr(char c, uint8_t attr) {
+    if (c == '\n') {
+        term_col = 0;
+        term_row++;
+        if (term_row >= TERM_ROWS) term_row = TERM_ROWS - 1;
+        return;
+    }
+    VGA[term_row * TERM_COLS + term_col] = ((uint16_t)attr << 8) | (uint8_t)c;
+    term_col++;
+    if (term_col >= TERM_COLS) {
+        term_col = 0;
+        term_row++;
+        if (term_row >= TERM_ROWS) term_row = TERM_ROWS - 1;
     }
 }
 
-/* Tiny shell */
-void shell_loop(void) {
-    char line[128];
-    int len = 0;
-    puts("abanta> ");
-    while (1) {
-        char c = getch_block();
-        if (c == '\n') {
-            putchar('\n');
-            line[len] = 0;
-            if (len == 0) {
-                puts("abanta> ");
-                continue;
-            }
-            /* handle commands: help, echo, clear, reboot (makes QEMU exit via triple fault) */
-            if (len == 4 && line[0]=='h' && line[1]=='e' && line[2]=='l' && line[3]=='p') {
-                puts("Commands:\n help\n echo <text>\n clear\n reboot\n");
-            } else if (len >= 5 && line[0]=='e' && line[1]=='c' && line[2]=='h' && line[3]=='o' && line[4]==' ') {
-                puts(line + 5);
-                putchar('\n');
-            } else if (len == 5 && line[0]=='c' && line[1]=='l' && line[2]=='e' && line[3]=='a' && line[4]=='r') {
-                /* clear screen */
-                for (int r = 0; r < 25; ++r)
-                    for (int cc = 0; cc < 80; ++cc)
-                        VGA[r*80 + cc] = ' ' | (0x07 << 8);
-                cursor_row = 0;
-                cursor_col = 0;
-            } else if (len == 6 && line[0]=='r' && line[1]=='e' && line[2]=='b' && line[3]=='o' && line[4]=='o' && line[5]=='t') {
-                /* cause CPU halt loop (QEMU will show it) */
-                puts("Rebooting (halt)...\n");
-                for (;;) { __asm__ volatile ("hlt"); }
-            } else {
-                puts("Unknown command\n");
-            }
-            /* new prompt */
-            len = 0;
-            puts("abanta> ");
-        } else if (c == '\b') {
-            if (len > 0) {
-                len--;
-                /* backspace on screen */
-                if (cursor_col > 0) {
-                    cursor_col--;
-                } else {
-                    if (cursor_row > 0) {
-                        cursor_row--;
-                        cursor_col = 79;
-                    }
-                }
-                VGA[cursor_row*80 + cursor_col] = ' ' | (0x07 << 8);
-            }
-        } else {
-            if (len + 1 < (int)sizeof(line)) {
-                line[len++] = c;
-                putchar(c);
-            }
-        }
-    }
+/* Write NUL-terminated string */
+static void vga_puts(const char *s) {
+    while (*s) vga_putch_attr(*s++, (VGA_COLOR_WHITE << 4) | VGA_COLOR_BLACK);
 }
 
-/* Kernel entry from boot.S */
+/* Clear screen */
+static void vga_clear(void) {
+    for (int r=0;r<TERM_ROWS;r++) {
+        for (int c=0;c<TERM_COLS;c++) {
+            VGA[r*TERM_COLS + c] = ((uint16_t)0x07 << 8) | ' ';
+        }
+    }
+    term_row = 0;
+    term_col = 0;
+}
+
+/* Simple scancode -> ASCII (partial, lowercase letters, digits, space, backspace, enter) */
+static const char scancode_map[128] = {
+    0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b', /* 0x0f */
+    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',  /* 0x1e */
+    0, 'a','s','d','f','g','h','j','k','l',';','\'','`',   /* 0x2b */
+    0,'\\','z','x','c','v','b','n','m',',','.','/', 0, /* 0x39 */
+    ' ', /* 0x39 = space */
+    /* rest are zeros */
+};
+
+/* Read PS/2 scancode (blocking) */
+static unsigned char keyboard_read_scancode(void) {
+    unsigned char sc;
+    /* Poll until data is available (status 0x60) */
+    while (1) {
+        unsigned char status = inb(0x64);
+        if (status & 1) break;
+    }
+    sc = inb(0x60);
+    return sc;
+}
+
+/* Very small input routine that returns printable characters (no modifiers) */
+static char read_char_from_keyboard(void) {
+    unsigned char sc = keyboard_read_scancode();
+    /* ignore key release codes (scancode with high bit set) */
+    if (sc & 0x80) return 0;
+    if (sc < 128) {
+        char c = scancode_map[sc];
+        return c;
+    }
+    return 0;
+}
+
+/* print prompt "abanta>" */
+static void print_prompt(void) {
+    vga_puts("abanta> ");
+}
+
+/* kernel_main — called from boot.S */
 void kernel_main(void) {
-    /* simple init */
-    init_scancode_map();
-    puts("Abanta kernel — enter 'abanta>' shell\n");
-    shell_loop();
-    for (;;) __asm__ volatile("hlt");
+    vga_clear();
+    vga_puts("Abanta kernel booted.\n");
+    print_prompt();
+
+    /* input buffer */
+    char buf[128];
+    int idx = 0;
+
+    while (1) {
+        char c = read_char_from_keyboard();
+        if (!c) continue;
+
+        if (c == '\b') { /* backspace */
+            if (idx > 0) {
+                idx--;
+                /* move cursor back and overwrite */
+                if (term_col == 0) {
+                    if (term_row > 0) { term_row--; term_col = TERM_COLS - 1; }
+                } else term_col--;
+                VGA[term_row * TERM_COLS + term_col] = ((uint16_t)0x07 << 8) | ' ';
+            }
+            continue;
+        } else if (c == '\n') {
+            vga_putch_attr('\n', (VGA_COLOR_WHITE << 4) | VGA_COLOR_BLACK);
+            buf[idx] = '\0';
+            /* simple built-in commands */
+            if (idx == 0) {
+                /* empty line just print prompt */
+                print_prompt();
+            } else {
+                /* echo the entered line on next line */
+                vga_puts("you typed: ");
+                vga_puts(buf);
+                vga_putch_attr('\n', (VGA_COLOR_WHITE << 4) | VGA_COLOR_BLACK);
+                print_prompt();
+            }
+            idx = 0;
+            continue;
+        } else if (c == 0) {
+            continue;
+        } else {
+            /* printable */
+            if (idx < (int)(sizeof(buf)-1)) {
+                buf[idx++] = c;
+                vga_putch_attr(c, (VGA_COLOR_WHITE << 4) | VGA_COLOR_BLACK);
+            }
+        }
+    }
 }

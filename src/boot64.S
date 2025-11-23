@@ -1,49 +1,51 @@
 ; boot64.S - multiboot2 header (ELF64) + minimal long-mode bootstrap
-; NASM 64-bit, assembled to ELF64. This file provides:
-;  - multiboot2 header (tagged) in .multiboot2 section
-;  - a 64-bit _start symbol that runs in 64-bit (GRUB loads ELF64) or
-;    performs minimal checks and jumps to kernel_main.
-; Note: GRUB2 with multiboot2 will load the ELF and jump to entry point,
-; typically in 64-bit if kernel is ELF64. This stub is intentionally minimal.
+; NASM 64-bit, assembled to ELF64.
+; Minimal, correct Multiboot2 header (magic/arch/length/checksum + END tag).
+; Calls kernel_main in C (must be provided by your kernel C file).
 
 BITS 64
 DEFAULT REL
 
 section .multiboot2
-align 8
-    ; Multiboot2 header (magic, architecture, header_length, checksum)
-    ; We include a simple header with the END tag.
-    dd 0xE85250D6    ; multiboot2 magic
-    dd 0             ; architecture (0 = i386, but GRUB uses ELF class)
-    dd 8             ; header length (we'll actually include tags; set to minimal 8 for safety)
-    dd -(0xE85250D6 + 0 + 8) ; checksum
-    ; Note: For full tag support you'd append tags; GRUB accepts minimal magic/checksum.
+    align 8
+mb2_header:
+    dd 0xE85250D6           ; multiboot2 magic
+    dd 0                    ; architecture (0 = i386; GRUB uses ELF class to decide mode)
+    dd mb2_header_end - mb2_header  ; full header length (magic..end tag)
+    dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header)) ; checksum (so sum = 0 mod 2^32)
+
+    ; --- END tag (required) ---
+    dw 0    ; type = 0 (MB2_TAG_END)
+    dw 0    ; flags (must be zero)
+    dd 8    ; size of this tag (8)
+
+mb2_header_end:
 
 section .text
-global _start
-extern kernel_main
+    align 16
+    global _start
+    extern kernel_main
 
 _start:
-    ; When GRUB loads an ELF64 kernel it typically jumps in long mode already.
-    ; For safety, we assume we are in long mode and directly call kernel_main.
-    ; If GRUB left the CPU in a different mode (rare for ELF64), this will fail.
-    ; Advanced flows would include a 32-bit stub to enable long mode, but modern GRUB
-    ; will call ELF64 entry while in long mode.
+    ; minimal sanity: disable interrupts and set up a stack then call C entry
     cli
     xor rbp, rbp
-    mov rsp, stack_top
-    ; clear direction flag
+
+    ; set up a stack (stack_top label defined in .bss)
+    lea rsp, [rel stack_top]
+
+    ; ensure direction flag clear
     cld
 
-    ; call C kernel entry (kernel_main)
+    ; call kernel entry (C)
     call kernel_main
 
-halt:
+.halt_loop:
     hlt
-    jmp halt
+    jmp .halt_loop
 
 section .bss
-align 4096
+    align 4096
 stack_bottom:
-    resb 16384
+    resb 16384            ; 16 KiB stack
 stack_top:

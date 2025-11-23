@@ -8,7 +8,7 @@ sudo apt install build-essential nasm grub-mkrescue xorriso qemu-system-x86```
 In order to run this in QEMU,
 Clone this GitHub repository.
 In your terminal, run ```cd Abanta-Kernel```.
-Now, to build abanta.efi, run ```make```, and them run ```make iso```. To clean, run ```make clean```.
+Now, to build abanta.efi, run ```make```. To clean, run ```make clean```.
 Run the kernel in QEMU with ```make run```.
 
 You are also free to create your own full OS distribution of Abanta.

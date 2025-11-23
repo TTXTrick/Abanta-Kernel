@@ -1,25 +1,29 @@
+/* linker.ld — linker script for a simple 64-bit freestanding kernel */
+OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
 SECTIONS
 {
-    . = 1M;
+  . = 0x100000; /* load at 1MB */
+  .text : {
+    *(.multiboot)
+    *(.text)
+    *(.rodata)
+  }
 
-    .text : {
-        *(.multiboot2)
-        *(.text*)
-    }
+  .data : {
+    *(.data)
+  }
 
-    .rodata : {
-        *(.rodata*)
-    }
+  .bss : {
+    __bss_start = .;
+    *(.bss)
+    *(COMMON)
+    __bss_end = .;
+  }
 
-    .data : {
-        *(.data*)
-    }
-
-    .bss : {
-        *(COMMON)
-        *(.bss*)
-        . = ALIGN(16);
-    }
+  /DISCARD/ : {
+    *(.comment)
+    *(.note*)
+  }
 }

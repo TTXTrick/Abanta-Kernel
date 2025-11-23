@@ -1,20 +1,29 @@
-/* Linker script for Abanta kernel (simple) */
+/* linker.ld — simple linker script for a 64-bit kernel ELF */
 OUTPUT_FORMAT("elf64-x86-64")
-ENTRY(start)
+ENTRY(_start)
+
 SECTIONS
 {
-  . = 1M; /* place kernel at 1 MiB */
+  . = 0x100000; /* place kernel at 1MiB (typical for multiboot kernels) */
+
   .text : {
-    *(.multiboot)
-    *(.text.boot)
-    *(.text*)
+    *(.text)
+    *(.text.*)
+    *(.rodata)
+    *(.rodata.*)
   }
-  .rodata : { *(.rodata*) }
-  .data : { *(.data*) }
+
+  .data : {
+    *(.data)
+    *(.data.*)
+  }
+
   .bss : {
     __bss_start = .;
-    *(.bss*)
-    *(COMMON)
+    *(.bss)
+    *(.bss.*)
     __bss_end = .;
   }
+
+  /DISCARD/ : { *(.eh_frame) *(.comment) }
 }

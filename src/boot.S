@@ -1,55 +1,112 @@
-; Minimal 64-bit entry with Multiboot2 header (so GRUB can load).
-; This file provides a small multiboot2 header and an _start label that sets up a stack
-; and calls kernel_main (C).
+; =====================================================================
+;   Minimal Working Multiboot2 Bootloader for 64-bit Kernel
+; =====================================================================
 
-BITS 64
-SECTION .multiboot2_hdr
-ALIGN 8
+BITS 32
+SECTION .multiboot2
+align 8
 
-; Multiboot2 header (simple, no optional tags). Magic and checksum required.
-; magic: 0xE85250D6
-; architecture: 0 (i386) but GRUB supports 64-bit ELF if the kernel itself is ELF64.
-MB2_MAGIC      equ 0xE85250D6
-MB2_ARCH       equ 0
-; header length (we place 8 bytes header + end tag = 16)
-MB2_LENGTH     equ 16
-MB2_CHECKSUM   equ -(MB2_MAGIC + MB2_ARCH + MB2_LENGTH)
+multiboot_header:
+    dd 0xe85250d6              ; magic
+    dd 0                       ; architecture = i386
+    dd (multiboot_header_end - multiboot_header) ; header length
+    dd 0x100000000 - (0xe85250d6 + 0 + \
+        (multiboot_header_end - multiboot_header)) ; checksum
 
-dd MB2_MAGIC
-dd MB2_ARCH
-dd MB2_LENGTH
-dd MB2_CHECKSUM
+    ; End tag
+    dw 0                       ; type = 0 (END TAG)
+    dw 0                       ; flags
+    dd 8                       ; size = 8
 
-; end tag for multiboot2 header
-dd 0 ; end tag type
-dd 8 ; end tag size
+multiboot_header_end:
+
+; =====================================================================
+; GRUB jumps here (32-bit protected mode)
+; =====================================================================
 
 SECTION .text
 global _start
-extern kernel_main
-
 _start:
-    ; set up a minimal stack (use some high address in virtual memory)
-    mov     rbp, 0
-    mov     rsp, stack_top
+    mov esp, stack_top         ; set a simple stack
 
-    ; zero out registers commonly expected
-    xor     rax, rax
-    xor     rbx, rbx
-    xor     rcx, rcx
-    xor     rdx, rdx
+    ; GRUB passes (eax=magic, ebx=multiboot2 struct)
+    push ebx
+    push eax
 
-    ; Call C entry point
-    call    kernel_main
+    call switch_to_long_mode
+
+.hang:
+    jmp .hang   ; never return
+
+; =====================================================================
+; Set up identity paging & enter long mode
+; =====================================================================
+
+switch_to_long_mode:
+    cli
+
+    ; Enable PAE
+    mov eax, cr4
+    or eax, 1 << 5
+    mov cr4, eax
+
+    ; Load PML4
+    mov eax, pml4_table
+    mov cr3, eax
+
+    ; Enable long mode
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1 << 8
+    wrmsr
+
+    ; Enable paging
+    mov eax, cr0
+    or eax, 1 << 31
+    mov cr0, eax
+
+    ; Far jump → 64-bit mode
+    jmp 0x08:long_mode_entry
+
+; =====================================================================
+; 64-bit code starts here
+; =====================================================================
+
+BITS 64
+long_mode_entry:
+    mov rsp, stack_top_64
+
+    extern kernel_main
+    call kernel_main
 
 halt:
-    cli
     hlt
     jmp halt
 
+; =====================================================================
+; Paging structures (identity map first 2 MB)
+; =====================================================================
+
 SECTION .bss
-    ALIGN 16
-stack_bottom:
-    ; reserve 16KB stack
-    resb 16384
-stack_top:
+align 4096
+pml4_table:
+    dq pdpt_table | 0x03
+pdpt_table:
+    dq pd_table | 0x03
+    times 511 dq 0
+pd_table:
+    dq 0x00000000 | 0x83   ; 2 MB page
+    times 511 dq 0
+
+; =====================================================================
+; Stack
+; =====================================================================
+
+align 16
+stack_space: resb 4096
+stack_top equ stack_space + 4096
+
+SECTION .bss
+align 16
+stack_space_64: resb 4096
+stack_top_64 equ stack_space_64 + 4096

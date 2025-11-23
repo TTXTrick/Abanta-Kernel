@@ -1,59 +1,62 @@
-# Simple build for Abanta minimal kernel (multiboot2 + GRUB)
-# Requirements: nasm, gcc, ld, grub-mkrescue (or grub-install tools), xorriso, qemu-system-x86
+# Makefile — Option B kernel (GRUB ELF kernel)
+# Usage:
+#   make         -> build kernel ELF (build/kernel.bin)
+#   make iso     -> build bootable ISO (build/abanta.iso) using grub-mkrescue
+#   make run     -> boot the ISO in qemu (requires grub-mkrescue and qemu-system-x86_64)
 
-OUTDIR = build
-SRCDIR = src
-
-KERNEL_ELF = $(OUTDIR)/kernel.elf
-KERNEL_BIN = $(OUTDIR)/kernel.bin
-ISO = $(OUTDIR)/abanta.iso
-GRUB_DIR = $(OUTDIR)/iso/boot/grub
-
-AS = nasm
 CC = gcc
 LD = ld
+NASM = nasm
 OBJCOPY = objcopy
 
-CFLAGS = -m64 -ffreestanding -O2 -Wall -Wextra -nostdlib -fno-pic
-LDFLAGS = -T linker.ld -nostdlib
+SRC = src
+BUILD = build
+ISO_DIR = iso
+GRUB_DIR = $(ISO_DIR)/boot/grub
 
-OBJS = $(OUTDIR)/boot.o $(OUTDIR)/kernel.o
+KERN = build/kernel.bin
+ISO = build/abanta.iso
 
-.PHONY: all clean run iso
+CFLAGS = -m64 -ffreestanding -fno-builtin -fno-pic -O2 -Wall -Wextra -nostdlib -fno-stack-protector
+NASMFLAGS = -f elf64
 
-all: $(ISO)
+.PHONY: all clean iso run
 
-$(OUTDIR):
-	mkdir -p $(OUTDIR)
+all: $(KERN)
 
-# assemble boot (boot.S)
-$(OUTDIR)/boot.o: $(SRCDIR)/boot.S | $(OUTDIR)
-	$(AS) -f elf64 $< -o $@
+$(BUILD):
+	mkdir -p $(BUILD)
+
+# assemble boot (NASM)
+$(BUILD)/boot.o: $(SRC)/boot.S | $(BUILD)
+	$(NASM) $(NASMFLAGS) $< -o $@
 
 # compile kernel C
-$(OUTDIR)/kernel.o: $(SRCDIR)/kernel.c $(SRCDIR)/kernel.h | $(OUTDIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD)/kernel.o: $(SRC)/kernel.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# link ELF kernel (multiboot2 header is in boot.o)
-$(KERNEL_ELF): $(OBJS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+# link kernel (ELF)
+$(KERN): $(BUILD)/boot.o $(BUILD)/kernel.o linker.ld
+	$(LD) -nostdlib -T linker.ld -o $(KERN) $(BUILD)/boot.o $(BUILD)/kernel.o
 
-# convert ELF to raw bin (not strictly necessary for grub; keep for inspection)
-$(KERNEL_BIN): $(KERNEL_ELF)
-	$(OBJCOPY) -O binary $< $@
-
-# make a grub iso
-$(ISO): $(KERNEL_ELF)
+# build ISO using grub-mkrescue (if available)
+iso: $(KERN)
+	rm -rf $(ISO_DIR) build_iso
 	mkdir -p $(GRUB_DIR)
-	# place kernel in iso/boot
-	cp $< $(OUTDIR)/iso/boot/kernel.elf
-	# grub.cfg
-	printf 'set timeout=5\nset default=0\nmenuentry "Abanta kernel" { multiboot2 /boot/kernel.elf }\n' > $(GRUB_DIR)/grub.cfg
-	# build iso (requires grub-mkrescue + xorriso)
-	grub-mkrescue -o $@ $(OUTDIR)/iso 2>/dev/null || (echo "grub-mkrescue failed - try installing grub2-common / grub-mkrescue / xorriso"; false)
+	cp $(KERN) $(ISO_DIR)/boot/kernel.bin
+	cp grub/grub.cfg $(GRUB_DIR)/grub.cfg
+	# Use grub-mkrescue to build a bootable ISO (common on Debian/Ubuntu)
+	@if command -v grub-mkrescue >/dev/null 2>&1; then \
+	  grub-mkrescue -o $(ISO) $(ISO_DIR) >/dev/null 2>&1 || { echo "grub-mkrescue failed"; exit 1; } \
+	else \
+	  echo "Error: grub-mkrescue not found. Install grub-pc-bin (Debian) or build the ISO manually."; exit 1; \
+	fi
 
-run: $(ISO)
-	qemu-system-x86_64 -m 512M -cdrom $(ISO) -boot d -serial stdio
+# run ISO in QEMU
+run: iso
+	@echo "Starting QEMU..."
+	# For BIOS boot (GRUB ISO)
+	qemu-system-x86_64 -cdrom $(ISO) -m 512M
 
 clean:
-	rm -rf $(OUTDIR)
+	rm -rf $(BUILD) $(ISO_DIR) $(ISO)

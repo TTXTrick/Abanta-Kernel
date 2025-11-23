@@ -1,29 +1,17 @@
-/* linker.ld — simple linker script for a 64-bit kernel ELF */
 OUTPUT_FORMAT("elf64-x86-64")
 ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x100000; /* place kernel at 1MiB (typical for multiboot kernels) */
-
-  .text : {
-    *(.text)
-    *(.text.*)
-    *(.rodata)
-    *(.rodata.*)
+  /* Put the multiboot header and early stub in the first page */
+  . = 0x100000;
+  .text :
+  {
+    *(.multiboot2_hdr)  /* header section from boot.S */
+    *(.text*)
   }
 
-  .data : {
-    *(.data)
-    *(.data.*)
-  }
-
-  .bss : {
-    __bss_start = .;
-    *(.bss)
-    *(.bss.*)
-    __bss_end = .;
-  }
-
-  /DISCARD/ : { *(.eh_frame) *(.comment) }
+  .rodata : { *(.rodata*) }
+  .data : { *(.data*) }
+  .bss  : { *(COMMON) *(.bss*) }
 }

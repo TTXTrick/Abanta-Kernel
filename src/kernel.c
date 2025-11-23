@@ -1,81 +1,136 @@
-/* Minimal 64-bit freestanding kernel skeleton.
-   Prints an "abanta>" prompt using VGA text mode (0xB8000).
-   The kernel entrypoint is kernel_main called from boot.S
-*/
-
 #include <stdint.h>
-#include <stddef.h>
 
-/* VGA text buffer */
-static volatile uint16_t *VGA = (uint16_t*)0xB8000;
-static const int VGA_WIDTH = 80;
-static const int VGA_HEIGHT = 25;
+#define VGA_ADDR 0xB8000
+#define VGA_WIDTH 80
+#define VGA_HEIGHT 25
 
-/* cursor state */
-static size_t cursor_row = 0;
-static size_t cursor_col = 0;
+static volatile uint16_t* vga = (uint16_t*)VGA_ADDR;
+static int cursor_x = 0;
+static int cursor_y = 0;
 
-/* write a single character with attribute */
-static void vga_putc(char c) {
+// VGA character helper
+static void vga_putc(char c, uint8_t color) {
     if (c == '\n') {
-        cursor_col = 0;
-        cursor_row++;
-    } else {
-        const uint8_t attr = 0x0F; /* white on black */
-        VGA[cursor_row * VGA_WIDTH + cursor_col] = ((uint16_t)attr << 8) | (uint8_t)c;
-        cursor_col++;
-        if (cursor_col >= VGA_WIDTH) {
-            cursor_col = 0;
-            cursor_row++;
-        }
+        cursor_x = 0;
+        cursor_y++;
+        return;
     }
-    if (cursor_row >= VGA_HEIGHT) {
-        /* simple scroll: move everything up one line */
-        for (size_t r = 1; r < VGA_HEIGHT; ++r) {
-            for (size_t c = 0; c < VGA_WIDTH; ++c) {
-                VGA[(r - 1) * VGA_WIDTH + c] = VGA[r * VGA_WIDTH + c];
+
+    if (cursor_y >= VGA_HEIGHT) {
+        for (int y = 1; y < VGA_HEIGHT; y++)
+            for (int x = 0; x < VGA_WIDTH; x++)
+                vga[(y - 1) * VGA_WIDTH + x] = vga[y * VGA_WIDTH + x];
+
+        for (int x = 0; x < VGA_WIDTH; x++)
+            vga[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = ' ' | (color << 8);
+
+        cursor_y = VGA_HEIGHT - 1;
+    }
+
+    vga[cursor_y * VGA_WIDTH + cursor_x] = (uint16_t)c | (color << 8);
+
+    cursor_x++;
+    if (cursor_x >= VGA_WIDTH) {
+        cursor_x = 0;
+        cursor_y++;
+    }
+}
+
+static void vga_print(const char* s, uint8_t color) {
+    while (*s) vga_putc(*s++, color);
+}
+
+static void vga_clear() {
+    for (int y = 0; y < VGA_HEIGHT; y++)
+        for (int x = 0; x < VGA_WIDTH; x++)
+            vga[y * VGA_WIDTH + x] = ' ' | (0x07 << 8);
+
+    cursor_x = 0;
+    cursor_y = 0;
+}
+
+// Keyboard port I/O
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+// US QWERTY scancode table (set 1)
+static char scancode_table[128] = {
+    0, 27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
+    '\t', 'q','w','e','r','t','y','u','i','o','p','[',']','\n', 0,
+    'a','s','d','f','g','h','j','k','l',';','\'','`', 0,'\\','z','x',
+    'c','v','b','n','m',',','.','/', 0, '*', 0,' ', 0,
+};
+
+// Shell buffer
+static char input_buf[128];
+static int input_len = 0;
+
+static void print_prompt() {
+    vga_print("abanta> ", 0x0A);
+}
+
+static void handle_command() {
+    if (input_len == 0) {
+        print_prompt();
+        return;
+    }
+
+    input_buf[input_len] = 0;
+
+    if (!__builtin_strcmp(input_buf, "help")) {
+        vga_print("Commands: help, clear, about\n", 0x07);
+    }
+    else if (!__builtin_strcmp(input_buf, "clear")) {
+        vga_clear();
+    }
+    else if (!__builtin_strcmp(input_buf, "about")) {
+        vga_print("Abanta Kernel v0.1\n", 0x07);
+    }
+    else {
+        vga_print("Unknown command\n", 0x07);
+    }
+
+    input_len = 0;
+    print_prompt();
+}
+
+void kernel_main() {
+    vga_clear();
+    vga_print("Abanta Kernel Loaded\n", 0x0F);
+    print_prompt();
+
+    // Main keyboard loop
+    while (1) {
+        if (inb(0x64) & 1) {  // keyboard buffer full
+            uint8_t sc = inb(0x60);
+
+            if (sc & 0x80) continue; // ignore key releases
+
+            char c = scancode_table[sc];
+
+            if (!c) continue;
+
+            if (c == '\n') {
+                vga_putc('\n', 0x07);
+                handle_command();
+            }
+            else if (c == '\b') {
+                if (input_len > 0) {
+                    input_len--;
+                    if (cursor_x > 0) cursor_x--;
+                    vga_putc(' ', 0x07);
+                    cursor_x--;
+                }
+            }
+            else {
+                if (input_len < 127) {
+                    input_buf[input_len++] = c;
+                    vga_putc(c, 0x07);
+                }
             }
         }
-        /* clear last line */
-        for (size_t c = 0; c < VGA_WIDTH; ++c) VGA[(VGA_HEIGHT - 1) * VGA_WIDTH + c] = (0x0F << 8) | ' ';
-        cursor_row = VGA_HEIGHT - 1;
-    }
-}
-
-/* write a null-terminated string */
-static void vga_puts(const char *s) {
-    for (size_t i = 0; s[i]; ++i) vga_putc(s[i]);
-}
-
-/* write formatted small integer (decimal). No printf dependency. */
-static void vga_putdec(unsigned long v) {
-    char buf[32];
-    int pos = 0;
-    if (v == 0) { vga_putc('0'); return; }
-    while (v) {
-        buf[pos++] = '0' + (v % 10);
-        v /= 10;
-    }
-    for (int i = pos - 1; i >= 0; --i) vga_putc(buf[i]);
-}
-
-/* Kernel entry: called from boot.S _start */
-void kernel_main(void) {
-    /* Clear screen */
-    for (size_t r = 0; r < VGA_HEIGHT; ++r)
-        for (size_t c = 0; c < VGA_WIDTH; ++c)
-            VGA[r * VGA_WIDTH + c] = (0x07 << 8) | ' ';
-
-    /* Print banner */
-    vga_puts("Abanta kernel skeleton\n");
-    vga_puts("----------------------\n\n");
-
-    /* Print abanta> prompt */
-    vga_puts("abanta> ");
-
-    /* very simple loop (no keyboard input implemented in this skeleton) */
-    for (;;) {
-        /* spin */
-        asm volatile("hlt");
     }
 }

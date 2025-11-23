@@ -1,97 +1,95 @@
-# ===============================
-#   Abanta Kernel - Final Makefile
-# ===============================
+# Abanta (multiboot2 / x86_64) kernel build
+# Default: build ELF64 kernel (kernel.elf). Set KFORMAT=bin to build legacy ELF32 kernel.bin
+# Requires: nasm, gcc, ld, objcopy, grub-mkrescue, xorriso, qemu-system-x86_64
 
-TARGET = abanta
-BUILD = build
-ISO   = iso
-BIN   = bin
+KFORMAT ?= elf    # elf => ELF64 kernel (recommended). bin => legacy 32-bit kernel.bin
 
-SRC  = src
-OBJ  = $(BUILD)/boot.o $(BUILD)/kernel.o
+OUTDIR := build
+BINDIR := bin
+ISODIR := iso
 
-CC = cc
-AS = nasm
-LD = ld
+SRCDIR := src
+ASM := nasm
+CC := gcc
+LD := ld
+OBJCOPY := objcopy
 
-CFLAGS = -m64 -ffreestanding -fno-pie -fno-builtin -fno-stack-protector -O2 -Wall -Wextra -I.
-LDFLAGS = -nostdlib -static -T linker.ld
+ASM64 := $(SRCDIR)/boot64.S
+ASM32 := $(SRCDIR)/boot32.S    # optional if we ever want 32-bit bootstrap
+KERNEL_C := $(SRCDIR)/kernel.c
 
-OVMF_CODE_SYS = /usr/share/OVMF/OVMF_CODE_4M.fd
-OVMF_VARS_SYS = /usr/share/OVMF/OVMF_VARS_4M.fd
+CFLAGS64 := -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -mno-red-zone -m64
+LDFLAGS64 := -nostdlib -static -T linker64.ld
 
-# Local copies stored in repo
-OVMF_CODE_LOCAL = OVMF_CODE.fd
-OVMF_VARS_LOCAL = OVMF_VARS.fd
+CFLAGS32 := -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -m32
+LDFLAGS32 := -nostdlib -static -T linker32.ld
 
+# Outputs
+KERNEL_ELF := $(OUTDIR)/kernel.elf
+KERNEL_BIN := $(OUTDIR)/kernel.bin   # legacy 32-bit multiboot
 
-# ===============================
-#            Build
-# ===============================
+.PHONY: all clean iso run
 
-all: $(BUILD)/kernel.elf
+all: $(OUTDIR) $(BINDIR) $(if $(filter elf,$(KFORMAT)), $(KERNEL_ELF), $(KERNEL_BIN))
 
-$(BUILD)/boot.o: $(SRC)/boot.S
-	mkdir -p $(BUILD)
-	$(AS) -f elf64 $(SRC)/boot.S -o $(BUILD)/boot.o
+$(OUTDIR):
+	mkdir -p $(OUTDIR)
 
-$(BUILD)/kernel.o: $(SRC)/kernel.c
-	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -c $(SRC)/kernel.c -o $(BUILD)/kernel.o
+$(BINDIR):
+	mkdir -p $(BINDIR)
 
-$(BUILD)/kernel.elf: $(OBJ)
-	$(LD) $(LDFLAGS) $(OBJ) -o $(BUILD)/kernel.elf
+# 64-bit build path
+$(OUTDIR)/boot64.o: $(ASM64) | $(OUTDIR)
+	$(ASM) -f elf64 $< -o $@
 
+$(OUTDIR)/kernel.o: $(KERNEL_C) | $(OUTDIR)
+	$(CC) $(CFLAGS64) -c $< -o $@
 
-# ===============================
-#             ISO
-# ===============================
+# link ELF64 kernel (multiboot2)
+$(KERNEL_ELF): $(OUTDIR)/boot64.o $(OUTDIR)/kernel.o linker64.ld | $(OUTDIR)
+	$(LD) $(LDFLAGS64) $(OUTDIR)/boot64.o $(OUTDIR)/kernel.o -o $@
+	@echo "Built $@"
 
-iso: $(BUILD)/kernel.elf
-	rm -rf $(ISO)
-	mkdir -p $(ISO)/boot/grub
-	cp $(BUILD)/kernel.elf $(ISO)/boot/kernel.elf
-	cp grub.cfg $(ISO)/boot/grub/grub.cfg
-	mkdir -p $(BIN)
-	grub-mkrescue -o $(BIN)/$(TARGET).iso $(ISO) 2>/dev/null || \
-	    (echo "grub-mkrescue failed — install xorriso + grub-mkrescue" && false)
+# 32-bit legacy multiboot (optional)
+$(OUTDIR)/boot32.o: $(ASM32) | $(OUTDIR)
+	$(ASM) -f elf32 $< -o $@
 
+$(OUTDIR)/kernel32.o: $(KERNEL_C) | $(OUTDIR)
+	$(CC) $(CFLAGS32) -c $< -o $@
 
-# ===============================
-#             UEFI RUN
-# ===============================
+$(KERNEL_BIN): $(OUTDIR)/boot32.o $(OUTDIR)/kernel32.o linker32.ld | $(OUTDIR)
+	$(LD) $(LDFLAGS32) $(OUTDIR)/boot32.o $(OUTDIR)/kernel32.o -o $(OUTDIR)/kernel32.elf
+	$(OBJCOPY) -O binary $(OUTDIR)/kernel32.elf $(KERNEL_BIN)
+	@echo "Built $(KERNEL_BIN)"
 
-# Copy OVMF files (first run only)
-ovmf:
-	@if [ ! -f "$(OVMF_CODE_LOCAL)" ]; then \
-	    echo "Copying OVMF_CODE..."; \
-	    cp $(OVMF_CODE_SYS) $(OVMF_CODE_LOCAL); \
-	fi
-	@if [ ! -f "$(OVMF_VARS_LOCAL)" ]; then \
-	    echo "Copying OVMF_VARS (writable)..."; \
-	    cp $(OVMF_VARS_SYS) $(OVMF_VARS_LOCAL); \
-	    chmod 666 $(OVMF_VARS_LOCAL); \
-	fi
+# Create ISO with GRUB2, multiboot2 supports ELF64 if GRUB is modern
+GRUB_CFG := grub.cfg
+ISO := $(BINDIR)/abanta.iso
 
-run: iso ovmf
-	@echo "Running QEMU EFI..."
-	qemu-system-x86_64 \
-	    -m 512M \
-	    -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE_LOCAL) \
-	    -drive if=pflash,format=raw,file=$(OVMF_VARS_LOCAL) \
-	    -drive format=raw,file=$(BIN)/$(TARGET).iso \
-	    -nographic
+$(ISO): $(if $(filter elf,$(KFORMAT)), $(KERNEL_ELF), $(KERNEL_BIN)) $(GRUB_CFG) | $(BINDIR) $(ISODIR)
+	rm -rf $(ISODIR)
+	mkdir -p $(ISODIR)/boot/grub
+ifeq ($(KFORMAT),elf)
+	cp $(KERNEL_ELF) $(ISODIR)/boot/kernel.elf
+	echo "Multiboot2 ELF64 kernel placed at /boot/kernel.elf"
+else
+	cp $(KERNEL_BIN) $(ISODIR)/boot/kernel.bin
+endif
+	cp $(GRUB_CFG) $(ISODIR)/boot/grub/grub.cfg
+	# build ISO (grub-mkrescue uses xorriso)
+	grub-mkrescue -o $(ISO) $(ISODIR) 2>/dev/null || (echo "grub-mkrescue failed — ensure grub-mkrescue/xorriso are installed." && false)
 
+iso: $(ISO)
 
-# ===============================
-#          Clean
-# ===============================
+run: $(ISO)
+	# Boot ISO under QEMU in UEFI or BIOS depending on the kernel format.
+ifeq ($(KFORMAT),elf)
+	# For ELF64 multiboot2 we use BIOS GRUB (GRUB will load ELF64 and should jump to 64-bit entry).
+	# QEMU boots the ISO (BIOS GRUB). If you prefer OVMF (UEFI) adjust accordingly.
+	qemu-system-x86_64 -m 1024 -cdrom $(ISO)
+else
+	qemu-system-x86_64 -m 1024 -cdrom $(ISO)
+endif
 
 clean:
-	rm -rf $(BUILD) $(ISO)
-
-distclean: clean
-	rm -rf $(BIN)
-	rm -f $(OVMF_CODE_LOCAL) $(OVMF_VARS_LOCAL)
-
-.PHONY: all iso run clean distclean ovmf
+	rm -rf $(OUTDIR) $(BINDIR) $(ISODIR)

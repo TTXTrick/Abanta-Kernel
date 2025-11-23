@@ -1,7 +1,6 @@
-; src/boot.S — NASM syntax (NOT GAS)
-; Compiles with: nasm -f elf64 src/boot.S -o build/boot.o
-; Simple 64-bit entry point for an ELF kernel loaded by GRUB.
-; Calls kernel_main(), then halts.
+; src/boot.S — NASM syntax
+; Assemble with: nasm -f elf64 src/boot.S -o build/boot.o
+; Simple 64-bit entry that sets up stack and calls kernel_main.
 
 BITS 64
 
@@ -10,16 +9,14 @@ global _start
 section .text
 
 _start:
-    ; Clear rbp (stack frame base)
+    ; Clear rbp
     xor     rbp, rbp
 
-    ; Load stack pointer
+    ; Setup a simple stack
     lea     rsp, [rel stack_top]
+    and     rsp, -16         ; align to 16
 
-    ; Align stack to 16 bytes
-    and     rsp, -16
-
-    ; Call kernel C entry point
+    ; Call C entry point
     extern  kernel_main
     call    kernel_main
 
@@ -28,9 +25,8 @@ _start:
     hlt
     jmp     .hang
 
-
 section .bss
 align 16
 stack:
-    resb 16384       ; 16 KiB stack
+    resb 16384        ; 16 KiB stack
 stack_top:

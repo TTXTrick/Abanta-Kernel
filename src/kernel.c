@@ -1,463 +1,411 @@
-/* kernel.c - Minimal 64-bit freestanding kernel skeleton with a simple shell
+/* src/kernel.c
  *
- * - Designed to be linked with a separate boot64.S that switches to long mode
- *   and calls kernel_main().
- * - No libc usage (freestanding). All helpers implemented here (kstrlen, kstrncmp, katoi...).
- * - VGA text-mode output (0xB8000) for console.
- * - Keyboard input via PS/2 port 0x60 (scancode set 1, simple mapping).
- * - Shell features:
- *     - prompt "abanta>"
- *     - basic commands: help, clear, echo, history, run <name>
- *     - line editing (backspace), simple history up/down
- * - Module registry: very small facility to register "user modules" (name + entry).
- *     - run <name> will call the module entry if registered.
+ * Minimal freestanding 64-bit kernel with a small interactive shell.
+ * - VGA text output
+ * - PS/2 keyboard polling (scancode set 1, basic extended-key support)
+ * - Command history (Up/Down arrows)
+ * - Builtins: help, clear, echo, history, run <hexaddr>, reboot
  *
- * NOTE: This is a kernel *skeleton*, not a full OS. It's intentionally small and
- * self-contained so you can build & iterate quickly.
+ * No libc. Self-contained helper implementations (kputs/kprintf/strings).
  *
- * Make sure your boot64.S calls: void kernel_main(void);
+ * Entrypoint expected: void kernel_main(void);
+ *
+ * WARNING: "run <hexaddr>" will jump to arbitrary memory. Use only with
+ * code you trust / have loaded at that address (ELF modules, hand-placed code).
  */
 
 #include <stdint.h>
+#include <stddef.h>
+#include <stdarg.h>
 
-/* ---------------------- low-level I/O ---------------------- */
+/* ---------------- basic types & small helpers ---------------- */
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
+typedef unsigned long ulong;
+typedef unsigned int uint;
+typedef unsigned short ushort;
+typedef unsigned char uchar;
 
 static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
+    uint8_t val;
+    asm volatile ("inb %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+static inline void outb(uint16_t port, uint8_t val) {
+    asm volatile ("outb %0, %1" :: "a"(val), "Nd"(port));
 }
 
-/* ---------------------- simple types & helpers ---------------------- */
-
-typedef unsigned long size_t;
-typedef uint64_t u64;
-typedef uint32_t u32;
-typedef uint16_t u16;
-typedef uint8_t u8;
-
-static size_t kstrlen(const char *s) {
-    size_t n = 0;
-    while (s && s[n]) n++;
-    return n;
-}
-
-static int kstrncmp(const char *a, const char *b, size_t n) {
-    for (size_t i = 0; i < n; ++i) {
-        unsigned char ca = (unsigned char)a[i];
-        unsigned char cb = (unsigned char)b[i];
-        if (ca != cb) return (int)ca - (int)cb;
-        if (ca == 0) return 0;
-    }
-    return 0;
-}
-
-static int kstrcmp(const char *a, const char *b) {
-    for (size_t i = 0;; ++i) {
-        unsigned char ca = (unsigned char)a[i];
-        unsigned char cb = (unsigned char)b[i];
-        if (ca != cb) return (int)ca - (int)cb;
-        if (ca == 0) return 0;
-    }
-}
-
-static int katoi(const char *s) {
-    int sign = 1;
-    int v = 0;
-    if (*s == '-') { sign = -1; ++s; }
-    while (*s >= '0' && *s <= '9') {
-        v = v * 10 + (*s - '0');
-        ++s;
-    }
-    return v * sign;
-}
-
-/* ---------------------- VGA text-mode console ---------------------- */
+/* ---------------- VGA text-mode output ---------------- */
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
-static volatile uint16_t * const VGA_BUF = (uint16_t*)0xB8000;
+static volatile uint16_t *vga = (uint16_t *)0xB8000;
+static uint8_t vga_attr = 0x07; /* light grey on black */
+static size_t cursor_row = 0, cursor_col = 0;
 
-static u16 cursor_row = 0;
-static u16 cursor_col = 0;
-static u8 current_attr = 0x07; /* light grey on black */
-
-static void vga_putat(char c, u8 attr, u16 row, u16 col) {
-    VGA_BUF[row * VGA_WIDTH + col] = ((u16)attr << 8) | (uint8_t)c;
+static void vga_update_cursor(void) {
+    /* optional: implement hardware cursor later - we won't use it here */
 }
 
-static void vga_scroll(void) {
-    for (u16 r = 1; r < VGA_HEIGHT; ++r) {
-        for (u16 c = 0; c < VGA_WIDTH; ++c) {
-            VGA_BUF[(r - 1) * VGA_WIDTH + c] = VGA_BUF[r * VGA_WIDTH + c];
+static void vga_scroll_if_needed(void) {
+    if (cursor_row < VGA_HEIGHT) return;
+    /* scroll up by 1 */
+    for (size_t r = 1; r < VGA_HEIGHT; ++r) {
+        for (size_t c = 0; c < VGA_WIDTH; ++c) {
+            vga[(r-1)*VGA_WIDTH + c] = vga[r*VGA_WIDTH + c];
         }
     }
     /* clear last line */
-    for (u16 c = 0; c < VGA_WIDTH; ++c) {
-        vga_putat(' ', current_attr, VGA_HEIGHT - 1, c);
-    }
-    if (cursor_row > 0) cursor_row--;
+    size_t last = (VGA_HEIGHT - 1) * VGA_WIDTH;
+    for (size_t c = 0; c < VGA_WIDTH; ++c) vga[last + c] = ((uint16_t)vga_attr << 8) | ' ';
+    cursor_row = VGA_HEIGHT - 1;
 }
 
-static void vga_set_cursor(u16 row, u16 col) {
-    cursor_row = row;
-    cursor_col = col;
-    /* not updating hardware cursor - not necessary */
-}
-
-static void vga_putch(char c) {
-    if (c == '\n') {
+static void kputc(char ch) {
+    if (ch == '\n') {
         cursor_col = 0;
         cursor_row++;
-        if (cursor_row >= VGA_HEIGHT) vga_scroll();
+        vga_scroll_if_needed();
         return;
     }
-    if (c == '\r') {
-        cursor_col = 0;
+    if (ch == '\r') { cursor_col = 0; return; }
+    if (ch == '\t') {
+        int tab = 4 - (cursor_col % 4);
+        for (int i = 0; i < tab; ++i) kputc(' ');
         return;
     }
-    if (c == '\t') {
-        int spaces = 4 - (cursor_col % 4);
-        for (int i = 0; i < spaces; ++i) vga_putch(' ');
+    if (ch == '\b') {
+        if (cursor_col > 0) {
+            cursor_col--;
+            size_t off = cursor_row * VGA_WIDTH + cursor_col;
+            vga[off] = ((uint16_t)vga_attr << 8) | ' ';
+        }
         return;
     }
-
-    vga_putat(c, current_attr, cursor_row, cursor_col);
+    size_t off = cursor_row * VGA_WIDTH + cursor_col;
+    vga[off] = ((uint16_t)vga_attr << 8) | (uint8_t)ch;
     cursor_col++;
     if (cursor_col >= VGA_WIDTH) {
         cursor_col = 0;
         cursor_row++;
-        if (cursor_row >= VGA_HEIGHT) vga_scroll();
+        vga_scroll_if_needed();
     }
 }
 
-static void vga_puts(const char *s) {
-    for (size_t i = 0; s && s[i]; ++i) vga_putch(s[i]);
+static void kputs(const char *s) {
+    for (; *s; ++s) kputc(*s);
 }
 
-static void vga_clear(void) {
-    for (u16 r = 0; r < VGA_HEIGHT; ++r) {
-        for (u16 c = 0; c < VGA_WIDTH; ++c) {
-            vga_putat(' ', current_attr, r, c);
-        }
-    }
-    vga_set_cursor(0, 0);
-}
-
-static void vga_puthex(u64 v) {
-    const char *hex = "0123456789ABCDEF";
+static void kputhex(unsigned long v) {
     char buf[17];
-    buf[16] = 0;
+    buf[16] = '\0';
     for (int i = 15; i >= 0; --i) {
-        buf[i] = hex[v & 0xF];
+        int nib = v & 0xF;
+        buf[i] = (nib < 10) ? ('0' + nib) : ('a' + (nib - 10));
         v >>= 4;
     }
-    vga_puts(buf);
+    kputs("0x");
+    kputs(buf);
 }
 
-/* ---------------------- Keyboard (PS/2 set 1) - minimal ----------------------
- *
- * We implement a tiny scancode -> ASCII mapping for common keys.
- * This is purposely minimal and not full-featured (no modifiers handling
- * beyond Shift for letters/digits).
- */
-
-enum {
-    KBD_PORT = 0x60,
-    KBD_STATUS = 0x64
-};
-
-/* Scancode set 1 (make codes) for common keys */
-static const char scancode_map[128] = {
-    0,  27, '1','2','3','4','5','6','7','8', /* 0 - 9 */
-    '9','0','-','=', '\b', /* backspace */
-    '\t', /* tab */
-    'q','w','e','r','t','y','u','i','o','p', /* 16-25 */
-    '[',']','\n', /* enter */
-    0, /* ctrl */
-    'a','s','d','f','g','h','j','k','l',';', /* 30-39 */
-    '\'', '`', 0, /* left shift */
-    '\\','z','x','c','v','b','n','m',',','.','/', /* 44-54 */
-    0, /* right shift */
-    '*', 0, /* alt? */
-    ' ', /* space */
-    /* The rest mostly zeros */
-};
-
-static const char scancode_map_shift[128] = {
-    0,  27, '!', '@','#','$','%','^','&','*',
-    '(',')','_','+','\b','\t',
-    'Q','W','E','R','T','Y','U','I','O','P',
-    '{','}','\n', 0,
-    'A','S','D','F','G','H','J','K','L',':',
-    '"','~',0,'|','Z','X','C','V','B','N','M','<','>','?',
-    0, '*', 0, ' '
-};
-
-static int kbd_has_data(void) {
-    /* status port bit 1 (output buffer full) -> data available */
-    u8 st;
-    st = inb(KBD_STATUS);
-    return st & 1;
+static void kputdec(unsigned long v) {
+    char buf[24];
+    int i = 0;
+    if (v == 0) { kputc('0'); return; }
+    while (v) { buf[i++] = '0' + (v % 10); v /= 10; }
+    for (int j = i-1; j >= 0; --j) kputc(buf[j]);
 }
 
-static int kbd_read_scancode(void) {
-    /* busy-wait for input */
-    while (!kbd_has_data()) {
-        /* spin */
-    }
-    return inb(KBD_PORT);
-}
-
-/* We won't implement full modifier tracking; keep simple: if Shift pressed, map through shift table.
- * Scancode: 0x2A = left shift make, 0xAA = left shift break
- * 0x36 = right shift make, 0xB6 = right shift break
- */
-static int shift_down = 0;
-
-static int kbd_getchar_blocking(void) {
-    for (;;) {
-        int sc = kbd_read_scancode();
-        if (sc == 0) continue;
-        if (sc == 0x2A || sc == 0x36) { shift_down = 1; continue; }
-        if (sc == 0xAA || sc == 0xB6) { shift_down = 0; continue; }
-        /* ignore release codes with high bit set (>127) */
-        if (sc & 0x80) continue;
-        if (shift_down) {
-            if (sc < 128 && scancode_map_shift[sc]) return scancode_map_shift[sc];
-        } else {
-            if (sc < 128 && scancode_map[sc]) return scancode_map[sc];
+/* minimal printf-like */
+static void kprintf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    for (const char *p = fmt; *p; ++p) {
+        if (*p != '%') { kputc(*p); continue; }
+        ++p;
+        if (*p == '\0') break;
+        switch (*p) {
+        case 's': {
+            const char *s = va_arg(ap, const char*);
+            if (!s) s = "(null)";
+            kputs(s);
+            break;
+        }
+        case 'c': {
+            int c = va_arg(ap, int);
+            kputc((char)c);
+            break;
+        }
+        case 'd':
+        case 'u': {
+            unsigned long d = va_arg(ap, unsigned long);
+            kputdec(d);
+            break;
+        }
+        case 'x':
+        case 'p': {
+            unsigned long x = va_arg(ap, unsigned long);
+            kputhex(x);
+            break;
+        }
+        case '%': kputc('%'); break;
+        default:
+            kputc('%'); kputc(*p);
         }
     }
+    va_end(ap);
 }
 
-/* ---------------------- Simple module registry ---------------------- */
-
-#define MAX_MODULES 16
-#define MOD_NAME_LEN 32
-
-typedef void (*module_entry_t)(void);
-
-typedef struct {
-    char name[MOD_NAME_LEN];
-    module_entry_t entry;
-    int used;
-} module_t;
-
-static module_t modules[MAX_MODULES];
-
-static int register_module(const char *name, module_entry_t entry) {
-    for (int i = 0; i < MAX_MODULES; ++i) {
-        if (!modules[i].used) {
-            modules[i].used = 1;
-            /* copy name safely */
-            size_t n = kstrlen(name);
-            if (n >= MOD_NAME_LEN) n = MOD_NAME_LEN - 1;
-            for (size_t j = 0; j < n; ++j) modules[i].name[j] = name[j];
-            modules[i].name[n] = 0;
-            modules[i].entry = entry;
-            return 0;
-        }
-    }
-    return -1;
+/* clear screen */
+static void kclear(void) {
+    size_t total = VGA_WIDTH * VGA_HEIGHT;
+    for (size_t i = 0; i < total; ++i) vga[i] = ((uint16_t)vga_attr << 8) | ' ';
+    cursor_row = 0; cursor_col = 0;
 }
 
-static module_entry_t find_module(const char *name) {
-    for (int i = 0; i < MAX_MODULES; ++i) {
-        if (!modules[i].used) continue;
-        if (kstrcmp(modules[i].name, name) == 0) return modules[i].entry;
+/* ---------------- small string helpers (k-prefixed to avoid libc) ---------------- */
+
+static size_t kstrlen(const char *s) {
+    size_t n = 0;
+    while (s && *s++) ++n;
+    return n;
+}
+static int kstrncmp(const char *a, const char *b, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char ca = a[i], cb = b[i];
+        if (ca != cb) return (int)ca - (int)cb;
+        if (ca == '\0') return 0;
     }
     return 0;
 }
-
-/* For demonstration: a tiny sample module */
-static void sample_module(void) {
-    vga_puts("\n[mod] hello from sample_module()\n");
+static char *kstrcpy(char *dst, const char *src) {
+    char *d = dst;
+    while ((*d++ = *src++));
+    return dst;
+}
+static unsigned long kstrtoul_hex(const char *s) {
+    unsigned long v = 0;
+    while (*s) {
+        char c = *s++;
+        int nib;
+        if (c >= '0' && c <= '9') nib = c - '0';
+        else if (c >= 'a' && c <= 'f') nib = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') nib = c - 'A' + 10;
+        else break;
+        v = (v << 4) | (unsigned)nib;
+    }
+    return v;
 }
 
-/* ---------------------- Shell with history ---------------------- */
+/* ---------------- PS/2 keyboard scancode handling (small) ----------------
+   - Polls port 0x60.
+   - Supports extended-prefix 0xE0 for arrow keys (Up/Down).
+   - Ignores key releases (0x80 bit).
+   - Provides ASCII for common keys; no SHIFT handling (so uppercase non-handled).
+*/
 
-#define SHELL_PROMPT "abanta> "
-#define SHELL_MAX_LINE 256
+enum {
+    KEY_NONE = 0,
+    KEY_UP = 0x100,
+    KEY_DOWN = 0x101,
+    KEY_LEFT = 0x102,
+    KEY_RIGHT = 0x103
+};
+
+/* scancode set 1 map (unshifted) for common keys */
+static const char scmap[128] = {
+/* 0x00..0x0f */  0,  27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
+/* 0x10..0x1f */  '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n', 0,
+/* 0x20..0x2f */  'a','s','d','f','g','h','j','k','l',';','\'','`', 0,'\\','z','x',
+/* 0x30..0x3f */  'c','v','b','n','m',',','.','/','\n', '*', 0,' ', 0, 0, 0, 0,
+/* 0x40..0x4f */  0, 0, 0, 0, 0, 0, 0, '7','8','9','-','4','5','6','+','1',
+/* 0x50..0x5f */  '2','3','0','.','\0', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+static int kb_getkey(void) {
+    int extended = 0;
+    while (1) {
+        uint8_t sc = inb(0x60);
+        if (sc == 0xE0) { extended = 1; continue; }
+        /* ignore key releases */
+        if (sc & 0x80) { extended = 0; continue; }
+        if (extended) {
+            if (sc == 0x48) return KEY_UP;
+            if (sc == 0x50) return KEY_DOWN;
+            if (sc == 0x4B) return KEY_LEFT;
+            if (sc == 0x4D) return KEY_RIGHT;
+            extended = 0;
+            /* fallthrough to mapping if desired */
+        }
+        if (sc < 128 && scmap[sc]) return (int)scmap[sc];
+    }
+}
+
+/* ---------------- Shell: state, history, line editing ---------------- */
+
+#define SHELL_LINE_MAX 256
 #define SHELL_HISTORY 16
 
-static char history[SHELL_HISTORY][SHELL_MAX_LINE];
+static char line_buf[SHELL_LINE_MAX];
+static char history[SHELL_HISTORY][SHELL_LINE_MAX];
 static int history_count = 0;
-static int history_pos = 0; /* for navigation */
+static int history_pos = 0; /* for navigation; 0..history_count */
 
-static void history_add(const char *line) {
-    if (!line || !line[0]) return;
-    /* simple circular push */
-    for (int i = SHELL_HISTORY - 1; i > 0; --i) {
-        for (size_t j = 0; j < SHELL_MAX_LINE; ++j) history[i][j] = history[i - 1][j];
+static void push_history(const char *ln) {
+    if (!ln || ln[0] == '\0') return;
+    /* avoid duplicate consecutive entry */
+    if (history_count > 0) {
+        if (kstrncmp(history[(history_count-1) % SHELL_HISTORY], ln, SHELL_LINE_MAX) == 0) return;
     }
-    /* copy line to history[0] */
-    size_t n = kstrlen(line);
-    if (n >= SHELL_MAX_LINE) n = SHELL_MAX_LINE - 1;
-    for (size_t j = 0; j < n; ++j) history[0][j] = line[j];
-    history[0][n] = 0;
-    if (history_count < SHELL_HISTORY) history_count++;
-    history_pos = -1; /* reset navigation */
+    if (history_count < SHELL_HISTORY) {
+        kstrcpy(history[history_count], ln);
+    } else {
+        /* rotate left 1 */
+        for (int i = 0; i < SHELL_HISTORY-1; ++i) kstrcpy(history[i], history[i+1]);
+        kstrcpy(history[SHELL_HISTORY-1], ln);
+    }
+    history_count++;
 }
 
-static void shell_print_prompt(void) {
-    vga_puts(SHELL_PROMPT);
+/* erase current typed characters from screen (backspace them) */
+static void erase_prompt_chars(size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        kputc('\b'); kputc(' '); kputc('\b');
+    }
 }
 
-static void shell_clear_line_on_screen(int col_start) {
-    /* rudimentary: replace until end of line with spaces */
-    for (u16 c = col_start; c < VGA_WIDTH; ++c) {
-        vga_putat(' ', current_attr, cursor_row, c);
-    }
-    vga_set_cursor(cursor_row, col_start);
+/* print prompt */
+static void prompt(void) {
+    kputs("abanta> ");
 }
 
-static void shell_execute(const char *line) {
-    if (!line) return;
-    if (kstrncmp(line, "help", 4) == 0) {
-        vga_puts("\nCommands:\n");
-        vga_puts("  help           - show this help\n");
-        vga_puts("  clear          - clear screen\n");
-        vga_puts("  echo <text>    - print text\n");
-        vga_puts("  history        - show recent commands\n");
-        vga_puts("  run <modname>  - run a registered module\n");
-        vga_puts("  modules        - list registered modules\n");
-        return;
-    }
-    if (kstrcmp(line, "clear") == 0) {
-        vga_clear();
-        return;
-    }
-    if (kstrncmp(line, "echo ", 5) == 0) {
-        vga_puts("\n");
-        vga_puts(line + 5);
-        vga_puts("\n");
-        return;
-    }
-    if (kstrcmp(line, "history") == 0) {
-        vga_puts("\nHistory:\n");
-        for (int i = 0; i < history_count; ++i) {
-            vga_puts("  ");
-            vga_puts(history[i]);
-            vga_puts("\n");
+/* ---------------- built-in commands ---------------- */
+
+static void cmd_help(void) {
+    kputs("Commands:\n");
+    kputs("  help            - show this help\n");
+    kputs("  clear           - clear the screen\n");
+    kputs("  echo ...        - print text\n");
+    kputs("  history         - list command history\n");
+    kputs("  run <hexaddr>   - jump to code at hex address (use with care)\n");
+    kputs("  reboot          - reboot the machine\n");
+}
+
+/* keyboard-controller reset (works on many PCs) */
+static void do_reboot(void) {
+    kputs("Rebooting...\n");
+    /* attempt keyboard controller reset */
+    outb(0x64, 0xFE);
+    for(;;) asm volatile ("hlt");
+}
+
+/* shell execute implementation */
+static void shell_execute(const char *ln) {
+    if (!ln) return;
+    if (kstrncmp(ln, "help", 4) == 0) { cmd_help(); return; }
+    if (kstrncmp(ln, "clear", 5) == 0) { kclear(); return; }
+    if (kstrncmp(ln, "echo ", 5) == 0) { kputs(ln + 5); kputc('\n'); return; }
+    if (kstrncmp(ln, "history", 7) == 0) {
+        int start = (history_count > SHELL_HISTORY) ? (history_count - SHELL_HISTORY) : 0;
+        for (int i = 0; i < history_count && i < SHELL_HISTORY; ++i) {
+            int idx = i + start;
+            kprintf("%d: %s\n", (unsigned long)idx, history[i]);
         }
         return;
     }
-    if (kstrncmp(line, "run ", 4) == 0) {
-        const char *modname = line + 4;
-        module_entry_t e = find_module(modname);
-        if (!e) {
-            vga_puts("\nModule not found: ");
-            vga_puts(modname);
-            vga_puts("\n");
-            return;
-        }
-        vga_puts("\nRunning module: ");
-        vga_puts(modname);
-        vga_puts("\n");
-        e();
-        vga_puts("\nModule finished\n");
+    if (kstrncmp(ln, "run ", 4) == 0) {
+        const char *arg = ln + 4;
+        unsigned long addr = kstrtoul_hex(arg);
+        if (addr == 0) { kputs("Invalid address (hex) or 0\n"); return; }
+        kprintf("Jumping to %p ...\n", addr);
+        void (*entry)(void) = (void(*)(void))(uintptr_t)addr;
+        entry();
+        /* If it returns, print something */
+        kputs("\nReturned from run()\n");
         return;
     }
-    if (kstrcmp(line, "modules") == 0) {
-        vga_puts("\nModules:\n");
-        for (int i = 0; i < MAX_MODULES; ++i) {
-            if (!modules[i].used) continue;
-            vga_puts("  ");
-            vga_puts(modules[i].name);
-            vga_puts("\n");
-        }
-        return;
-    }
+    if (kstrncmp(ln, "reboot", 6) == 0) { do_reboot(); return; }
 
-    vga_puts("\nUnknown command: ");
-    vga_puts(line);
-    vga_puts("\n");
+    kputs("Unknown command: ");
+    kputs(ln);
+    kputc('\n');
 }
 
-/* ---------------------- Simple line editor using PS/2 getchar ---------------------- */
+/* ---------------- main shell input loop ---------------- */
 
 static void shell_loop(void) {
-    char line[SHELL_MAX_LINE];
+    prompt();
     size_t len = 0;
-    shell_print_prompt();
+    history_pos = history_count; /* position for navigation (end) */
+    line_buf[0] = '\0';
 
-    for (;;) {
-        int ch = kbd_getchar_blocking();
-        if (ch == '\r' || ch == '\n') {
-            /* newline */
-            vga_putch('\n');
-            line[len] = 0;
-            if (len > 0) {
-                history_add(line);
-                shell_execute(line);
-            }
-            len = 0;
-            line[0] = 0;
-            shell_print_prompt();
+    while (1) {
+        int k = kb_getkey();
+        if (k == KEY_UP) {
+            /* navigate up: previous entry */
+            if (history_count == 0) continue;
+            if (history_pos > 0) history_pos--;
+            /* erase current line */
+            erase_prompt_chars(len);
+            /* copy history into buffer */
+            const char *h = history[history_pos];
+            kstrcpy(line_buf, h);
+            len = kstrlen(line_buf);
+            kputs(line_buf);
             continue;
-        }
-        if (ch == 0x08) { /* backspace */
-            if (len > 0) {
-                /* move cursor back and erase */
-                if (cursor_col == 0) {
-                    if (cursor_row > 0) { cursor_row--; cursor_col = VGA_WIDTH - 1; }
-                } else {
-                    cursor_col--;
-                }
-                vga_putat(' ', current_attr, cursor_row, cursor_col);
-                line[--len] = 0;
-            }
-            continue;
-        }
-        /* Simple history navigation not implemented via special keys (lack of arrows),
-           but we keep a history[] for 'history' command. Implementing up/down would
-           require detecting arrow scancodes (0xE0 0x48 / 0x50). For simplicity we
-           do a very tiny support: if user types "~<n>" treat it as "run history entry n".
-           (This is optional; not necessary).
-        */
-        if (ch >= 32 && ch <= 126) {
-            if (len + 1 < SHELL_MAX_LINE) {
-                line[len++] = (char)ch;
-                vga_putch((char)ch);
+        } else if (k == KEY_DOWN) {
+            if (history_count == 0) continue;
+            if (history_pos < history_count - 1) history_pos++;
+            else { history_pos = history_count; /* empty */ }
+            erase_prompt_chars(len);
+            if (history_pos == history_count) {
+                line_buf[0] = '\0'; len = 0;
             } else {
-                /* beep? just ignore */
+                kstrcpy(line_buf, history[history_pos]);
+                len = kstrlen(line_buf);
+                kputs(line_buf);
+            }
+            continue;
+        } else if (k == '\n') {
+            kputc('\n');
+            if (len > 0) {
+                push_history(line_buf);
+            }
+            shell_execute(line_buf);
+            /* reset */
+            len = 0;
+            line_buf[0] = '\0';
+            prompt();
+        } else if (k == '\b') {
+            if (len > 0) {
+                kputc('\b'); kputc(' '); kputc('\b');
+                len--;
+                line_buf[len] = '\0';
+            }
+        } else if (k >= 32 && k < 127) {
+            if (len + 1 < SHELL_LINE_MAX) {
+                kputc((char)k);
+                line_buf[len++] = (char)k;
+                line_buf[len] = '\0';
+            } else {
+                /* ring bell */
+                kputc('\a');
             }
         }
     }
 }
 
-/* ---------------------- Kernel entry point ---------------------- */
+/* ---------------- entry point ---------------- */
 
-/* Called from boot64.S */
+/* kernel_main should match the label your assembler/bootloader calls.
+   If your boot stub passes multiboot params, change signature accordingly.
+*/
 void kernel_main(void) {
-    /* minimal init */
-    vga_clear();
-    vga_puts("Abanta kernel booted (x86_64)\n");
-    vga_puts("Type 'help' for commands.\n\n");
+    kclear();
+    kputs("Abanta kernel (64-bit) booted.\n");
+    kputs("Type 'help' for commands.\n\n");
 
-    /* Register a sample module so 'run sample' works */
-    register_module("sample", sample_module);
-
-    /* Enter shell */
     shell_loop();
 
-    /* never returns */
-    for (;;) __asm__ volatile ("hlt");
-}
-
-/* Provide a simple _start wrapper in case boot.S expects it.
- * If your boot.S already defines _start and calls kernel_main(), you can
- * ignore this. If building a standalone kernel (no boot.S), define
- * an appropriate entry that sets up long mode, stack, etc.
- *
- * This symbol is weak so a bootloader-provided _start will override it.
- */
-__attribute__((weak)) void _start(void) {
-    kernel_main();
-    for (;;) __asm__ volatile ("hlt");
+    /* unreachable */
+    for (;;) asm volatile ("hlt");
 }

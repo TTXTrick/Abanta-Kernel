@@ -4,9 +4,9 @@ SECTIONS
 {
     . = 1M;
 
-    .multiboot2 :
+    .multiboot :
     {
-        KEEP(*(.multiboot2))
+        KEEP(*(.multiboot))
     }
 
     .text ALIGN(4K) :

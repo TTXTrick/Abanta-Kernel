@@ -6,7 +6,7 @@
 BITS 64
 DEFAULT REL
 
-section .multiboot2
+section .multiboot
 align 8
 
 mb2_start:

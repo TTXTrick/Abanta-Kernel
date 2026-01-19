@@ -8,18 +8,19 @@ DEFAULT REL
 
 section .multiboot
 align 8
-mb2_header_start:
-    dd 0xE85250D6          ; magic
-    dd 0                   ; architecture (i386)
-    dd mb2_header_end - mb2_header_start
-    dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header_start))
 
-    ; --- end tag ---
-    dw 0                   ; type = END
-    dw 0                   ; flags
-    dd 8                   ; size
+mb2_start:
+    dd 0xE85250D6        ; magic
+    dd 0                 ; architecture (i386)
+    dd mb2_end - mb2_start
+    dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
 
-mb2_header_end:
+    ; END tag (required)
+    dw 0
+    dw 0
+    dd 8
+
+mb2_end:
 
 section .text
     align 16

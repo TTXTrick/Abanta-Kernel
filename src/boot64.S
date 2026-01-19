@@ -3,7 +3,7 @@
 ; Minimal, correct Multiboot2 header (magic/arch/length/checksum + END tag).
 ; Calls kernel_main in C (must be provided by your kernel C file).
 
-BITS 64
+BITS 64    ; why not
 DEFAULT REL
 
 section .multiboot

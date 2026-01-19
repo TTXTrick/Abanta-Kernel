@@ -1,17 +1,12 @@
-/* 64-bit kernel linker script */
-
 ENTRY(_start)
 
 SECTIONS
 {
-    /* Load at 1MB to avoid BIOS memory areas */
     . = 1M;
 
-    /* Multiboot header MUST be in the first 8KB */
-    .multiboot :
+    .multiboot2 :
     {
-        KEEP(*(.multiboot))
-        KEEP(*(.multiboot_header))
+        KEEP(*(.multiboot2))
     }
 
     .text ALIGN(4K) :
@@ -29,9 +24,7 @@ SECTIONS
     {
         *(COMMON)
         *(.bss*)
-        . = ALIGN(4K);
     }
 
-    /* Kernel end marker */
     _kernel_end = .;
 }

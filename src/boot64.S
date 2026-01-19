@@ -7,17 +7,17 @@ BITS 64
 DEFAULT REL
 
 section .multiboot2
-    align 8
-mb2_header:
-    dd 0xE85250D6           ; multiboot2 magic
-    dd 0                    ; architecture (0 = i386; GRUB uses ELF class to decide mode)
-    dd mb2_header_end - mb2_header  ; full header length (magic..end tag)
-    dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header)) ; checksum (so sum = 0 mod 2^32)
+align 8
+mb2_header_start:
+    dd 0xE85250D6          ; magic
+    dd 0                   ; architecture (i386)
+    dd mb2_header_end - mb2_header_start
+    dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header_start))
 
-    ; --- END tag (required) ---
-    dw 0    ; type = 0 (MB2_TAG_END)
-    dw 0    ; flags (must be zero)
-    dd 8    ; size of this tag (8)
+    ; --- end tag ---
+    dw 0                   ; type = END
+    dw 0                   ; flags
+    dd 8                   ; size
 
 mb2_header_end:
 

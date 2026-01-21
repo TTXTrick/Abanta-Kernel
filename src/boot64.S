@@ -82,17 +82,16 @@ long_mode_start:
 ; ---------------------
 align 4096
 pml4:
-    dq pdpt | 0x003
+    dq pdpt + 0x003          ; Present | Writable
 
 align 4096
 pdpt:
-    dq pd | 0x003
+    dq pd + 0x003            ; Present | Writable
 
 align 4096
 pd:
-    dq 0x00000000 | 0x083     ; 2 MiB page
+    dq 0x00000000 + 0x083    ; Present | Writable | 2MB
     times 511 dq 0
-
 
 ; ---------------------
 ; GDT

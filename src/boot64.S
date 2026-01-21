@@ -1,19 +1,16 @@
-; boot64.S
-; Multiboot2 32-bit entry → switch to 64-bit long mode → call kernel_main
-
-; =========================
-; Multiboot2 header (32-bit)
-; =========================
+; boot64.S — Multiboot2 32→64 bit boot stub (NASM, ELF64)
+; GRUB loads us in 32-bit protected mode
 
 BITS 32 ; why not
+DEFAULT REL
 
-section .multiboot2
+section .multiboot
 align 8
 
 mb2_start:
-    dd 0xE85250D6            ; magic
-    dd 0                     ; architecture (i386)
-    dd mb2_end - mb2_start   ; header length
+    dd 0xE85250D6          ; Multiboot2 magic
+    dd 0                  ; architecture (i386)
+    dd mb2_end - mb2_start
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
 
     ; END tag
@@ -22,10 +19,6 @@ mb2_start:
     dd 8
 mb2_end:
 
-; =========================
-; 32-bit entry point
-; =========================
-
 section .text
 align 16
 global _start
@@ -33,17 +26,14 @@ extern kernel_main
 
 _start:
     cli
-    mov esp, stack32_top
-
-    ; load GDT
-    lgdt [gdt_desc]
+    mov esp, stack_top32
 
     ; enable PAE
     mov eax, cr4
     or eax, 1 << 5
     mov cr4, eax
 
-    ; load PML4 base
+    ; load PML4
     mov eax, pml4
     mov cr3, eax
 
@@ -55,16 +45,19 @@ _start:
 
     ; enable paging
     mov eax, cr0
-    or eax, 0x80000001       ; PG | PE
+    or eax, 1 << 31
     mov cr0, eax
 
-    ; far jump to 64-bit code
+    ; load 64-bit GDT
+    lgdt [gdt64_ptr]
+
+    ; far jump to long mode
     jmp 0x08:long_mode_start
 
-; =========================
-; 64-bit code
-; =========================
 
+; ---------------------
+; 64-bit mode
+; ---------------------
 BITS 64
 
 long_mode_start:
@@ -75,70 +68,56 @@ long_mode_start:
     mov fs, ax
     mov gs, ax
 
-    mov rsp, stack64_top
-    xor rbp, rbp
-    cld
+    lea rsp, [stack_top64]
 
     call kernel_main
 
-.halt:
+.hang:
     hlt
-    jmp .halt
+    jmp .hang
 
-; =========================
-; GDT
-; =========================
 
-section .rodata
-align 8
-
-gdt:
-    dq 0x0000000000000000    ; null
-    dq 0x00AF9A000000FFFF    ; code (0x08)
-    dq 0x00AF92000000FFFF    ; data (0x10)
-
-gdt_desc:
-    dw gdt_desc - gdt - 1
-    dq gdt
-
-; =========================
-; Paging (identity map first 2MB)
-; =========================
-
-section .bss
+; ---------------------
+; Page tables (identity map first 2 MiB)
+; ---------------------
 align 4096
-
 pml4:
-    resq 512
-pdpt:
-    resq 512
-pd:
-    resq 512
+    dq pdpt | 0x003
 
 align 4096
-stack32:
+pdpt:
+    dq pd | 0x003
+
+align 4096
+pd:
+    dq 0x00000000 | 0x083     ; 2 MiB page
+    times 511 dq 0
+
+
+; ---------------------
+; GDT
+; ---------------------
+align 8
+gdt64:
+    dq 0
+    dq 0x00AF9A000000FFFF    ; code
+    dq 0x00AF92000000FFFF    ; data
+
+gdt64_ptr:
+    dw gdt64_ptr - gdt64 - 1
+    dq gdt64
+
+
+; ---------------------
+; Stacks
+; ---------------------
+section .bss
+align 16
+
+stack_bottom32:
     resb 4096
-stack32_top:
+stack_top32:
 
-align 4096
-stack64:
+stack_bottom64:
     resb 16384
-stack64_top:
-
-section .data
-align 4096
-
-    ; build page tables at link time
-    ; pml4[0] -> pdpt
-    ; pdpt[0] -> pd
-    ; pd[0]   -> 2MB page
-
-    dq pdpt | 0x3
-pml4_end:
-
-pdpt:
-    dq pd | 0x3
-pdpt_end:
-
-pd:
-    dq 0x00000000 | 0x83      ; 2MB page, RW | Present
+stack_top64:

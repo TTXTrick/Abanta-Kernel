@@ -1,4 +1,4 @@
-# Abanta Kernel
+# AbAnTa Kernel
 Just an open-source PC kernel
 
 Before doing anything, there are a few prerequisites. Run ```sudo apt update && sudo apt install build-essential nasm grub-mkrescue xorriso qemu-system-x86```

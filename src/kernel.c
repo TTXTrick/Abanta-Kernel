@@ -39,7 +39,7 @@ static inline void outb(uint16_t port, uint8_t val) {
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 static volatile uint16_t *vga = (uint16_t *)0xB8000;
-static uint8_t vga_attr = 0x07; /* light grey on black */
+static uint8_t vga_attr = 0x07; /* you have seen too much of this */
 static size_t cursor_row = 0, cursor_col = 0;
 
 static void vga_update_cursor(void) {

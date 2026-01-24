@@ -222,21 +222,38 @@ static const char scmap[128] = {
 };
 
 static int kb_getkey(void) {
-    int extended = 0;
-    while (1) {
+    static int extended = 0;
+
+    for (;;) {
+        /* wait until output buffer is full */
+        if (!(inb(0x64) & 1))
+            continue;
+
         uint8_t sc = inb(0x60);
-        if (sc == 0xE0) { extended = 1; continue; }
+
+        /* extended key prefix */
+        if (sc == 0xE0) {
+            extended = 1;
+            continue;
+        }
+
         /* ignore key releases */
-        if (sc & 0x80) { extended = 0; continue; }
+        if (sc & 0x80) {
+            extended = 0;
+            continue;
+        }
+
         if (extended) {
+            extended = 0;
             if (sc == 0x48) return KEY_UP;
             if (sc == 0x50) return KEY_DOWN;
             if (sc == 0x4B) return KEY_LEFT;
             if (sc == 0x4D) return KEY_RIGHT;
-            extended = 0;
-            /* fallthrough to mapping if desired */
+            continue;
         }
-        if (sc < 128 && scmap[sc]) return (int)scmap[sc];
+
+        if (sc < 128 && scmap[sc])
+            return scmap[sc];
     }
 }
 
